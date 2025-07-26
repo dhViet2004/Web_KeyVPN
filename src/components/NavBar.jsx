@@ -27,7 +27,7 @@ const NavBar = () => {
   // Navigation items cho user thường
   const userNavs = [
     { to: '/', label: 'Xác thực key', icon: <KeyOutlined /> },
-    { to: '/admin-login', label: 'Đăng nhập Admin', icon: <LoginOutlined /> },
+    { to: '/admin-login', label: 'Đăng nhập Admin', icon: null, isHidden: true },
   ]
 
   // Navigation items cho admin
@@ -42,7 +42,28 @@ const NavBar = () => {
   const items = navs.map(n => ({
     key: n.to,
     icon: n.icon,
-    label: <Link to={n.to}>{n.label}</Link>,
+    label: (
+      <Link 
+        to={n.to} 
+        style={n.isHidden ? { 
+          color: '#ffffff', 
+          opacity: 0.3,
+          transition: 'opacity 0.3s ease'
+        } : {}}
+        onMouseEnter={(e) => {
+          if (n.isHidden) {
+            e.target.style.opacity = '0.7'
+          }
+        }}
+        onMouseLeave={(e) => {
+          if (n.isHidden) {
+            e.target.style.opacity = '0.3'
+          }
+        }}
+      >
+        {n.label}
+      </Link>
+    ),
   }))
 
   return (
