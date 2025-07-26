@@ -7,7 +7,8 @@ import {
   ToolOutlined,
   SaveOutlined,
   ReloadOutlined,
-  EyeOutlined
+  EyeOutlined,
+  LinkOutlined
 } from '@ant-design/icons'
 import { useSettings } from '../hooks/useSettings'
 
@@ -62,6 +63,13 @@ function Settings() {
   const updateToolRuntime = (updates) => {
     updateSettings({
       toolRuntime: { ...settings.toolRuntime, ...updates }
+    })
+  }
+
+  // Update key export
+  const updateKeyExport = (updates) => {
+    updateSettings({
+      keyExport: { ...settings.keyExport, ...updates }
     })
   }
 
@@ -343,6 +351,49 @@ function Settings() {
                     className="w-full"
                   />
                 </Form.Item>
+              </Space>
+            </Form>
+          </Card>
+        </TabPane>
+
+        {/* Tab Link nhập key */}
+        <TabPane 
+          tab={
+            <span>
+              <LinkOutlined />
+              Link nhập key
+            </span>
+          } 
+          key="5"
+        >
+          <Card title="Cài đặt link nhập key">
+            <Form layout="vertical">
+              <Space direction="vertical" size="large" className="w-full">
+                <Form.Item 
+                  label="Template link khi xuất file TXT"
+                  help="Định dạng sẽ xuất hiện sau mã key khi xuất file TXT. Ví dụ: FBX-ABC123 | [nội dung này]"
+                >
+                  <Input
+                    value={settings.keyExport?.linkTemplate || 'link nhập key:'}
+                    onChange={(e) => updateKeyExport({ linkTemplate: e.target.value })}
+                    placeholder="link nhập key:"
+                    size="large"
+                  />
+                </Form.Item>
+
+                <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                  <div className="flex items-start gap-3">
+                    <EyeOutlined className="text-blue-500 mt-1" />
+                    <div>
+                      <h4 className="text-blue-700 font-semibold mb-2">Xem trước định dạng xuất file:</h4>
+                      <div className="bg-white p-3 rounded border font-mono text-sm">
+                        FBX-ABC123456 | {settings.keyExport?.linkTemplate || 'link nhập key:'}
+                        <br />
+                        THX-DEF789012 | {settings.keyExport?.linkTemplate || 'link nhập key:'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </Space>
             </Form>
           </Card>

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { PlusOutlined, DeleteOutlined, SyncOutlined, FileTextOutlined, SearchOutlined, UserOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import { Button, Input, Select, Table, Radio, Space, Typography, Divider, Form, Tabs, Modal, App } from 'antd'
+import { useSettings } from '../hooks/useSettings'
 
 const { Title } = Typography
 const { Option } = Select
@@ -42,6 +43,7 @@ const mockKeys = Array.from({ length: 8 }, (_, i) => ({
 
 const CreateKey = () => {
   const { message: messageApi } = App.useApp()
+  const { settings } = useSettings()
   const [keys, setKeys] = useState(mockKeys)
   const [activeGroup, setActiveGroup] = useState('FBX')
   const [days, setDays] = useState(30)
@@ -113,7 +115,8 @@ const CreateKey = () => {
     
     // Xuất file txt
     const fileName = `${prefix}${customDays || time}ngay.txt`
-    const content = newKeys.map(k => `${k.code} | http://yourdomain.com/nhap-key`).join('\n')
+    const linkTemplate = settings.keyExport?.linkTemplate || 'link nhập key:'
+    const content = newKeys.map(k => `${k.code} | ${linkTemplate}`).join('\n')
     const blob = new Blob([content], { type: 'text/plain' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)
@@ -259,7 +262,8 @@ const CreateKey = () => {
     }
     
     const fileName = `${activeGroup}${customDays || days}ngay.txt`
-    const content = selectedKeys.map(k => `${k.code} | http://yourdomain.com/nhap-key`).join('\n')
+    const linkTemplate = settings.keyExport?.linkTemplate || 'link nhập key:'
+    const content = selectedKeys.map(k => `${k.code} | ${linkTemplate}`).join('\n')
     const blob = new Blob([content], { type: 'text/plain' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)

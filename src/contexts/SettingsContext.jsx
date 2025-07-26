@@ -21,6 +21,9 @@ const getDefaultSettings = () => ({
   toolRuntime: {
     interval: 64,
     accountTarget: 50
+  },
+  keyExport: {
+    linkTemplate: 'link nhập key:'
   }
 })
 
