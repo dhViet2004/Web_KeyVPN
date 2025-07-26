@@ -40,6 +40,20 @@ function NotificationModal({ show, onClose, position = 'before' }) {
         <Paragraph className="text-gray-700 text-base leading-relaxed mb-0">
           {settings?.notification?.content || 'Chào mừng bạn đến với KeyVPN Tool!'}
         </Paragraph>
+        {settings?.notification?.hasLink && settings?.notification?.linkUrl && (
+          <div className="mt-4 pt-3 border-t border-gray-100">
+            <Button 
+              type="link" 
+              href={settings.notification.linkUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="!p-0 !text-blue-500 hover:!text-blue-700 !font-medium"
+              size="small"
+            >
+              {settings.notification.linkText || 'Xem thêm'} →
+            </Button>
+          </div>
+        )}
       </div>
     </Modal>
   )

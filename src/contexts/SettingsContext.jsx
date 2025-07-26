@@ -8,7 +8,10 @@ const getDefaultSettings = () => ({
     content: 'Chào mừng bạn đến với KeyVPN Tool!',
     position: 'before',
     displayCount: 1,
-    currentCount: 0
+    currentCount: 0,
+    hasLink: false,
+    linkUrl: '',
+    linkText: 'Xem thêm'
   },
   keyAssignTime: 5,
   giftCode: {

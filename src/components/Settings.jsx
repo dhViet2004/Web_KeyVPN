@@ -143,6 +143,42 @@ function Settings() {
                     className="w-full"
                   />
                 </Form.Item>
+
+                <Divider />
+
+                <Form.Item label="Kèm theo link">
+                  <Switch
+                    checked={settings.notification.hasLink}
+                    onChange={(checked) => updateNotification({ hasLink: checked })}
+                    checkedChildren="Có"
+                    unCheckedChildren="Không"
+                  />
+                  <Text type="secondary" className="ml-3">
+                    {settings.notification.hasLink ? 'Thông báo sẽ có link đính kèm' : 'Thông báo không có link'}
+                  </Text>
+                </Form.Item>
+
+                {settings.notification.hasLink && (
+                  <>
+                    <Form.Item label="URL Link">
+                      <Input
+                        value={settings.notification.linkUrl}
+                        onChange={(e) => updateNotification({ linkUrl: e.target.value })}
+                        placeholder="https://example.com"
+                        size="large"
+                      />
+                    </Form.Item>
+
+                    <Form.Item label="Tên hiển thị link">
+                      <Input
+                        value={settings.notification.linkText}
+                        onChange={(e) => updateNotification({ linkText: e.target.value })}
+                        placeholder="Xem thêm"
+                        size="large"
+                      />
+                    </Form.Item>
+                  </>
+                )}
               </Space>
             </Form>
           </Card>
@@ -165,12 +201,30 @@ function Settings() {
                 <Text className="text-gray-700 text-base leading-relaxed">
                   {settings.notification.content}
                 </Text>
+                {settings.notification.hasLink && settings.notification.linkUrl && (
+                  <div className="mt-4">
+                    <Button 
+                      type="link" 
+                      href={settings.notification.linkUrl}
+                      target="_blank"
+                      className="!p-0 !text-blue-500 hover:!text-blue-700"
+                    >
+                      {settings.notification.linkText || 'Xem thêm'} →
+                    </Button>
+                  </div>
+                )}
                 <Divider />
                 <Text type="secondary" className="text-sm">
                   <ClockCircleOutlined className="mr-1" />
                   Xuất hiện: {settings.notification.position === 'before' ? 'Trước' : 'Sau'} khi nhập key
                   <span className="mx-2">•</span>
                   Số lần: {settings.notification.displayCount}
+                  {settings.notification.hasLink && (
+                    <>
+                      <span className="mx-2">•</span>
+                      Có link đính kèm
+                    </>
+                  )}
                 </Text>
               </div>
             </Card>
