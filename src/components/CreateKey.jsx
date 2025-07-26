@@ -4,7 +4,6 @@ import { Button, Input, Select, Table, Radio, Space, Typography, Divider, Form, 
 
 const { Title } = Typography
 const { Option } = Select
-const { TabPane } = Tabs
 
 function randomKey(prefix = 'FBX') {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
@@ -47,7 +46,7 @@ const CreateKey = () => {
   const [activeGroup, setActiveGroup] = useState('FBX')
   const [days, setDays] = useState(30)
   const [customDays, setCustomDays] = useState('')
-  const [type, setType] = useState('3key')
+  const [type, setType] = useState('2key')
   const [accountCount, setAccountCount] = useState(1)
   const [amount, setAmount] = useState(1)
   const [customer, setCustomer] = useState('')
@@ -85,7 +84,50 @@ const CreateKey = () => {
     // Reset form
     setDays(30)
     setCustomDays('')
-    setType('3key')
+    setType('2key')
+    setAccountCount(1)
+    setAmount(1)
+    setCustomer('')
+    form.resetFields()
+  }
+
+  // Tạo key và xuất file txt
+  const handleCreateAndExport = () => {
+    const n = Math.max(1, parseInt(amount) || 1)
+    const prefix = activeGroup
+    const time = activeGroup === 'TEST' ? 2 : (customDays ? parseInt(customDays) : days)
+    const newKeys = Array.from({ length: n }, () => ({
+      id: Date.now() + Math.random(),
+      code: randomKey(prefix),
+      group: prefix,
+      status: 'chờ',
+      days: time,
+      customer,
+      selected: false,
+      accountCount,
+      type,
+    }))
+    
+    // Thêm key vào danh sách
+    setKeys([...newKeys, ...keys])
+    
+    // Xuất file txt
+    const fileName = `${prefix}${customDays || time}ngay.txt`
+    const content = newKeys.map(k => `${k.code} | http://yourdomain.com/nhap-key`).join('\n')
+    const blob = new Blob([content], { type: 'text/plain' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = fileName
+    link.click()
+    
+    messageApi.success(`Đã tạo ${n} key mới và xuất file ${fileName}!`)
+    console.log('Thông báo tạo key và xuất file được gọi') // Debug log
+    setIsModalOpen(false)
+    
+    // Reset form
+    setDays(30)
+    setCustomDays('')
+    setType('2key')
     setAccountCount(1)
     setAmount(1)
     setCustomer('')
@@ -261,36 +303,44 @@ const CreateKey = () => {
     <div className="w-full max-w-4xl mx-auto bg-white p-2 sm:p-8 rounded-2xl shadow-md mt-2 sm:mt-6 transition-all">
       <Title level={3} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 20 }}><UnorderedListOutlined /> Key VPN</Title>
       <Divider />
-      <Tabs activeKey={activeGroup} onChange={setActiveGroup} type="card" className="mb-4">
-        {keyGroups.map(g => (
-          <TabPane tab={g.label} key={g.value}>
-            <div className="flex flex-col md:flex-row gap-2 md:gap-4 mb-4 w-full">
-              <Button type="primary" icon={<PlusOutlined />} onClick={showCreateModal} className="w-full md:w-auto">
-                Tạo key {g.label}
-              </Button>
-              <Button icon={<FileTextOutlined />} onClick={handleExport} className="w-full md:w-auto">Xuất TXT</Button>
-              <Button icon={<DeleteOutlined />} danger onClick={showFilterModal} className="w-full md:w-auto">Xóa key</Button>
-            </div>
-            <Divider />
-            <div className="flex flex-col md:flex-row gap-2 md:gap-4 mb-4 w-full">
-              <Input prefix={<SearchOutlined />} placeholder="Tìm kiếm key, FBX, THX, CTV, TEST, it..." className="w-full md:w-80" value={search} onChange={e => setSearch(e.target.value)} />
-              <Button onClick={handleSelectAll} className="w-full md:w-auto">{selectAll ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}</Button>
-            </div>
-            <div className="overflow-x-auto rounded-xl shadow-sm">
-              <Table
-                columns={columns}
-                dataSource={filteredKeys}
-                rowKey="id"
-                pagination={{ pageSize: 8 }}
-                scroll={{ x: true }}
-                bordered
-                size="middle"
-                style={{ borderRadius: 12, minWidth: 600 }}
-              />
-            </div>
-          </TabPane>
-        ))}
-      </Tabs>
+      <Tabs 
+        activeKey={activeGroup} 
+        onChange={setActiveGroup} 
+        type="card" 
+        className="mb-4"
+        items={keyGroups.map(g => ({
+          key: g.value,
+          label: g.label,
+          children: (
+            <>
+              <div className="flex flex-col md:flex-row gap-2 md:gap-4 mb-4 w-full">
+                <Button type="primary" icon={<PlusOutlined />} onClick={showCreateModal} className="w-full md:w-auto">
+                  Tạo key {g.label}
+                </Button>
+                <Button icon={<FileTextOutlined />} onClick={handleExport} className="w-full md:w-auto">Xuất TXT</Button>
+                <Button icon={<DeleteOutlined />} danger onClick={showFilterModal} className="w-full md:w-auto">Xóa key</Button>
+              </div>
+              <Divider />
+              <div className="flex flex-col md:flex-row gap-2 md:gap-4 mb-4 w-full">
+                <Input prefix={<SearchOutlined />} placeholder="Tìm kiếm key, FBX, THX, CTV, TEST, it..." className="w-full md:w-80" value={search} onChange={e => setSearch(e.target.value)} />
+                <Button onClick={handleSelectAll} className="w-full md:w-auto">{selectAll ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}</Button>
+              </div>
+              <div className="overflow-x-auto rounded-xl shadow-sm">
+                <Table
+                  columns={columns}
+                  dataSource={filteredKeys}
+                  rowKey="id"
+                  pagination={{ pageSize: 8 }}
+                  scroll={{ x: true }}
+                  bordered
+                  size="middle"
+                  style={{ borderRadius: 12, minWidth: 600 }}
+                />
+              </div>
+            </>
+          )
+        }))}
+      />
 
       {/* Modal tạo key */}
       <Modal
@@ -377,6 +427,9 @@ const CreateKey = () => {
           <div className="flex gap-2 justify-end">
             <Button onClick={handleCancel}>
               Hủy
+            </Button>
+            <Button type="default" icon={<FileTextOutlined />} onClick={handleCreateAndExport}>
+              Tạo key và xuất TXT
             </Button>
             <Button type="primary" icon={<PlusOutlined />} htmlType="submit">
               Tạo key
