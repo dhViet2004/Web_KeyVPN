@@ -40,6 +40,61 @@ router.get('/health', async (req, res) => {
 
 router.use(authenticateToken);
 
+// Debug endpoint - remove in production
+router.get('/debug', async (req, res) => {
+  try {
+    console.log('=== DEBUG ACCOUNTS ===');
+    
+    // Test simple account query
+    const simpleAccountsResult = await executeQuery('SELECT id, username, is_active, expires_at FROM vpn_accounts LIMIT 5');
+    console.log('Simple accounts:', simpleAccountsResult);
+    
+    // Test account_keys table
+    try {
+      const accountKeysResult = await executeQuery('SELECT account_id, key_id, is_active FROM account_keys LIMIT 5');
+      console.log('Account keys:', accountKeysResult);
+    } catch (error) {
+      console.log('account_keys table error:', error.message);
+    }
+    
+    // Test the complex query
+    const complexQuery = `
+      SELECT 
+        va.id,
+        va.username,
+        COALESCE(ak_count.key_count, 0) as key_count,
+        3 as max_keys
+      FROM vpn_accounts va
+      LEFT JOIN (
+        SELECT account_id, COUNT(*) as key_count 
+        FROM account_keys 
+        WHERE is_active = 1 
+        GROUP BY account_id
+      ) ak_count ON va.id = ak_count.account_id
+      WHERE va.is_active = 1
+      LIMIT 5
+    `;
+    
+    const complexResult = await executeQuery(complexQuery);
+    console.log('Complex query result:', complexResult);
+    
+    res.json({
+      success: true,
+      data: {
+        simple: simpleAccountsResult,
+        complex: complexResult
+      }
+    });
+    
+  } catch (error) {
+    console.error('Debug error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
 // @route   GET /api/accounts
 // @desc    Get VPN accounts with pagination and filters
 // @access  Private
@@ -114,15 +169,18 @@ router.get('/', [
         va.is_active,
         va.created_at,
         va.last_used,
-        -- Tính số lượng key đã gán từ bảng account_keys (fallback to 0 if table doesn't exist)
+        -- Tính số lượng key đã gán từ bảng account_keys
+        COALESCE(ak_count.key_count, 0) as key_count,
         COALESCE(ak_count.key_count, 0) as usage_count,
+        3 as max_keys,
         -- Lấy key code từ key_id cũ trước (tạm thời)
         vk.code as key_code,
         kg.code as group_code,
         CASE 
-          WHEN va.expires_at <= NOW() THEN 'hết hạn'
-          WHEN TIMESTAMPDIFF(HOUR, NOW(), va.expires_at) <= 1 THEN 'sắp hết hạn'
-          ELSE 'hoạt động'
+          WHEN va.expires_at <= NOW() THEN 'expired'
+          WHEN TIMESTAMPDIFF(HOUR, NOW(), va.expires_at) <= 1 THEN 'expiring_soon'
+          WHEN va.is_active = 0 THEN 'suspended'
+          ELSE 'active'
         END as status,
         TIMESTAMPDIFF(MINUTE, NOW(), va.expires_at) as minutes_remaining,
         -- Cột Key đã gán: hiển thị số key thực tế từ account_keys
@@ -168,7 +226,9 @@ router.get('/', [
       executeQuery(countQuery, countParams)
     ]);
 
-    console.log('accountsResult:', accountsResult);
+    console.log('accountsResult success:', accountsResult.success);
+    console.log('accountsResult data count:', accountsResult.data?.length || 0);
+    console.log('Sample account data:', accountsResult.data?.[0]);
     console.log('countResult:', countResult);
 
     if (!accountsResult.success || !countResult.success) {
@@ -1049,6 +1109,134 @@ router.get('/stats', async (req, res) => {
 
   } catch (error) {
     console.error('Get account stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   POST /api/accounts/transfer-key
+// @desc    Transfer a key from one account to another
+// @access  Private
+router.post('/transfer-key', [
+  body('keyId').isInt().withMessage('Key ID must be an integer'),
+  body('fromAccountId').isInt().withMessage('From account ID must be an integer'),
+  body('toAccountId').isInt().withMessage('To account ID must be an integer')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { keyId, fromAccountId, toAccountId } = req.body;
+
+    console.log(`Transferring key ${keyId} from account ${fromAccountId} to account ${toAccountId}`);
+
+    // Check if both accounts exist
+    const accountsCheck = await executeQuery(
+      'SELECT id, username FROM vpn_accounts WHERE id IN (?, ?)',
+      [fromAccountId, toAccountId]
+    );
+
+    if (!accountsCheck.success || accountsCheck.data.length !== 2) {
+      return res.status(404).json({
+        success: false,
+        message: 'One or both accounts not found'
+      });
+    }
+
+    try {
+      // Check if key exists and is currently assigned to the from account
+      const keyAssignmentCheck = await executeQuery(
+        'SELECT ak.id, ak.account_id, vk.code, vk.status, vk.account_count FROM account_keys ak JOIN vpn_keys vk ON ak.key_id = vk.id WHERE ak.key_id = ? AND ak.account_id = ? AND ak.is_active = 1',
+        [keyId, fromAccountId]
+      );
+
+      if (!keyAssignmentCheck.success || keyAssignmentCheck.data.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Key is not currently assigned to the source account'
+        });
+      }
+
+      const keyInfo = keyAssignmentCheck.data[0];
+
+      // Check if target account has available slots
+      const targetAccountKeyCount = await executeQuery(
+        'SELECT COUNT(*) as count FROM account_keys WHERE account_id = ? AND is_active = 1',
+        [toAccountId]
+      );
+
+      if (targetAccountKeyCount.success && targetAccountKeyCount.data[0].count >= 3) {
+        return res.status(400).json({
+          success: false,
+          message: 'Target account already has maximum number of keys (3)'
+        });
+      }
+
+      // Start transaction-like operations
+      // 1. Unassign key from source account
+      const unassignResult = await executeQuery(
+        'UPDATE account_keys SET is_active = 0 WHERE key_id = ? AND account_id = ? AND is_active = 1',
+        [keyId, fromAccountId]
+      );
+
+      if (!unassignResult.success) {
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to unassign key from source account'
+        });
+      }
+
+      // 2. Assign key to target account
+      const assignResult = await executeQuery(
+        'INSERT INTO account_keys (account_id, key_id, assigned_by) VALUES (?, ?, ?)',
+        [toAccountId, keyId, req.user?.id || null]
+      );
+
+      if (!assignResult.success) {
+        // Rollback: reactivate the key in source account
+        await executeQuery(
+          'UPDATE account_keys SET is_active = 1 WHERE key_id = ? AND account_id = ? AND is_active = 0',
+          [keyId, fromAccountId]
+        );
+        
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to assign key to target account'
+        });
+      }
+
+      console.log(`✅ Key ${keyId} (${keyInfo.code}) transferred from account ${fromAccountId} to account ${toAccountId} successfully`);
+
+      res.json({
+        success: true,
+        message: `Key ${keyInfo.code} transferred successfully`,
+        data: {
+          keyId: keyId,
+          keyCode: keyInfo.code,
+          fromAccountId: fromAccountId,
+          toAccountId: toAccountId
+        }
+      });
+
+    } catch (tableError) {
+      console.log('Key tables may not exist:', tableError.message);
+      
+      return res.status(503).json({
+        success: false,
+        message: 'Key management system is not fully configured. Please contact administrator.'
+      });
+    }
+
+  } catch (error) {
+    console.error('Transfer key error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error'

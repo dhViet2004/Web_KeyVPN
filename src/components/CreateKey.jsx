@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
-import { PlusOutlined, DeleteOutlined, FileTextOutlined, SearchOutlined, UserOutlined, UnorderedListOutlined, ReloadOutlined } from '@ant-design/icons'
+import { PlusOutlined, DeleteOutlined, FileTextOutlined, SearchOutlined, UserOutlined, UnorderedListOutlined, ReloadOutlined, RetweetOutlined, SwapOutlined } from '@ant-design/icons'
 import { Button, Input, Select, Table, Radio, Space, Typography, Divider, Form, Tabs, Modal, App, Spin, Alert, Popconfirm } from 'antd'
 import { useSettings } from '../hooks/useSettings'
 import { useKeys } from '../hooks/useKeys'
-import { keysAPI } from '../services/api'
+import { keysAPI, accountsAPI } from '../services/api'
 
 const { Title } = Typography
 const { Option } = Select
@@ -44,6 +44,20 @@ const CreateKey = () => {
   const [selectedKeysForDelete, setSelectedKeysForDelete] = useState([])
   const [selectAllForDelete, setSelectAllForDelete] = useState(false)
   const [form] = Form.useForm()
+
+  // States for assign key modal
+  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false)
+  const [currentKeyForAssign, setCurrentKeyForAssign] = useState(null)
+  const [accounts, setAccounts] = useState([])
+  const [loadingAccounts, setLoadingAccounts] = useState(false)
+  const [selectedAccountId, setSelectedAccountId] = useState(null)
+
+  // States for transfer key modal
+  const [isTransferModalOpen, setIsTransferModalOpen] = useState(false)
+  const [currentKeyForTransfer, setCurrentKeyForTransfer] = useState(null)
+  const [transferAccounts, setTransferAccounts] = useState([])
+  const [loadingTransferAccounts, setLoadingTransferAccounts] = useState(false)
+  const [selectedTransferAccountId, setSelectedTransferAccountId] = useState(null)
 
   // Fetch all keys for filtering purpose
   const fetchAllKeys = async () => {
@@ -311,6 +325,267 @@ const CreateKey = () => {
     }
   }
 
+  // Functions for assign key modal
+  const showAssignModal = async (key) => {
+    // Kiểm tra trạng thái key trước khi mở modal
+    if (key.status !== 'chờ') {
+      messageApi.warning(`Key ${key.code} không thể gán vì đang ở trạng thái: ${key.status}. Chỉ có thể gán key có trạng thái "chờ".`)
+      return
+    }
+
+    setCurrentKeyForAssign(key)
+    setIsAssignModalOpen(true)
+    setSelectedAccountId(null)
+    await fetchAccountsWithSlots()
+  }
+
+  const handleAssignCancel = () => {
+    setIsAssignModalOpen(false)
+    setCurrentKeyForAssign(null)
+    setSelectedAccountId(null)
+    setAccounts([])
+  }
+
+  const fetchAccountsWithSlots = async () => {
+    try {
+      setLoadingAccounts(true)
+      const response = await accountsAPI.getAccounts()
+      if (response.success && response.data && Array.isArray(response.data.accounts)) {
+        // Filter accounts that have available slots (less than max keys)
+        const accountsWithSlots = response.data.accounts.filter(account => {
+          const currentKeys = account.key_count || 0
+          const maxKeys = account.max_keys || 3 // Default max keys
+          return currentKeys < maxKeys
+        })
+        setAccounts(accountsWithSlots)
+      } else {
+        setAccounts([])
+      }
+    } catch (error) {
+      console.error('Error fetching accounts:', error)
+      messageApi.error('Lỗi tải danh sách tài khoản: ' + (error.message || error))
+      setAccounts([])
+    } finally {
+      setLoadingAccounts(false)
+    }
+  }
+
+  const handleAssignKey = async () => {
+    if (!selectedAccountId || !currentKeyForAssign) {
+      messageApi.warning('Vui lòng chọn tài khoản để gán key!')
+      return
+    }
+
+    try {
+      const response = await accountsAPI.assignKey(selectedAccountId, currentKeyForAssign.id)
+      
+      if (response.success) {
+        await fetchKeys(activeGroup)
+        await fetchAllKeys()
+        messageApi.success(`Đã gán key ${currentKeyForAssign.code} vào tài khoản thành công!`)
+        handleAssignCancel()
+      } else {
+        // Xử lý các lỗi cụ thể từ server
+        const errorMessage = response.message || 'Lỗi không xác định'
+        messageApi.error(`Lỗi gán key: ${errorMessage}`)
+      }
+    } catch (error) {
+      console.error('Assign key error details:', error)
+      
+      // Xử lý các loại lỗi khác nhau
+      let errorMessage = 'Lỗi không xác định'
+      
+      if (error.message.includes('Key not found or not available for assignment')) {
+        errorMessage = `Key ${currentKeyForAssign.code} không tồn tại hoặc không khả dụng để gán. Key phải có trạng thái "chờ".`
+      } else if (error.message.includes('Account not found')) {
+        errorMessage = 'Tài khoản không tồn tại.'
+      } else if (error.message.includes('already assigned')) {
+        errorMessage = `Key ${currentKeyForAssign.code} đã được gán cho tài khoản này.`
+      } else if (error.message.includes('maximum number of keys')) {
+        errorMessage = 'Tài khoản đã đạt số lượng key tối đa.'
+      } else if (error.message.includes('maximum number of accounts')) {
+        errorMessage = `Key ${currentKeyForAssign.code} đã đạt số lượng tài khoản tối đa.`
+      } else {
+        errorMessage = error.message || 'Lỗi gán key'
+      }
+      
+      messageApi.error(errorMessage)
+    }
+  }
+
+  // Functions for transfer key modal
+  const showTransferModal = async (key) => {
+    // Chỉ cho phép chuyển key đang hoạt động
+    if (key.status !== 'đang hoạt động') {
+      messageApi.warning(`Key ${key.code} không thể chuyển vì đang ở trạng thái: ${key.status}. Chỉ có thể chuyển key có trạng thái "đang hoạt động".`)
+      return
+    }
+
+    setCurrentKeyForTransfer(key)
+    setIsTransferModalOpen(true)
+    setSelectedTransferAccountId(null)
+    await fetchAccountsForTransfer()
+  }
+
+  const handleTransferCancel = () => {
+    setIsTransferModalOpen(false)
+    setCurrentKeyForTransfer(null)
+    setSelectedTransferAccountId(null)
+    setTransferAccounts([])
+  }
+
+  const fetchAccountsForTransfer = async () => {
+    try {
+      setLoadingTransferAccounts(true)
+      const response = await accountsAPI.getAccounts()
+      if (response.success && response.data && Array.isArray(response.data.accounts)) {
+        // Filter accounts that have available slots (less than max keys)
+        const accountsWithSlots = response.data.accounts.filter(account => {
+          const currentKeys = account.key_count || 0
+          const maxKeys = account.max_keys || 3 // Default max keys
+          return currentKeys < maxKeys
+        })
+        setTransferAccounts(accountsWithSlots)
+      } else {
+        setTransferAccounts([])
+      }
+    } catch (error) {
+      console.error('Error fetching accounts for transfer:', error)
+      messageApi.error('Lỗi tải danh sách tài khoản: ' + (error.message || error))
+      setTransferAccounts([])
+    } finally {
+      setLoadingTransferAccounts(false)
+    }
+  }
+
+  const handleTransferKey = async () => {
+    if (!selectedTransferAccountId || !currentKeyForTransfer) {
+      messageApi.warning('Vui lòng chọn tài khoản để chuyển key!')
+      return
+    }
+
+    try {
+      messageApi.info('Đang thực hiện chuyển key...')
+      
+      // Approach 1: Thử tìm tài khoản hiện tại thông qua việc lấy danh sách tài khoản và check keys
+      const allAccountsResponse = await accountsAPI.getAccounts()
+      let currentAccountId = null
+      
+      if (allAccountsResponse.success && allAccountsResponse.data && Array.isArray(allAccountsResponse.data.accounts)) {
+        // Thử tìm tài khoản nào có key này
+        for (const account of allAccountsResponse.data.accounts) {
+          try {
+            const accountKeysResponse = await accountsAPI.getAccountKeys(account.id)
+            if (accountKeysResponse.success && accountKeysResponse.data && Array.isArray(accountKeysResponse.data)) {
+              const hasKey = accountKeysResponse.data.some(key => key.id === currentKeyForTransfer.id || key.key_id === currentKeyForTransfer.id)
+              if (hasKey) {
+                currentAccountId = account.id
+                console.log(`Found key ${currentKeyForTransfer.id} in account ${account.id} (${account.username})`)
+                break
+              }
+            }
+          } catch (error) {
+            // Bỏ qua lỗi và tiếp tục tìm
+            console.log(`Cannot get keys for account ${account.id}:`, error.message)
+          }
+        }
+      }
+      
+      if (currentAccountId && currentAccountId !== selectedTransferAccountId) {
+        // Sử dụng API transferKey với tài khoản nguồn đã tìm được
+        console.log(`Transferring key ${currentKeyForTransfer.id} from account ${currentAccountId} to ${selectedTransferAccountId}`)
+        
+        try {
+          const response = await accountsAPI.transferKey(
+            currentKeyForTransfer.id, 
+            currentAccountId, 
+            selectedTransferAccountId
+          )
+          
+          if (response.success) {
+            await fetchKeys(activeGroup)
+            await fetchAllKeys()
+            messageApi.success(`Đã chuyển key ${currentKeyForTransfer.code} sang tài khoản mới thành công!`)
+            handleTransferCancel()
+            return
+          } else {
+            throw new Error(response.message || 'Transfer API failed')
+          }
+        } catch (transferError) {
+          console.log('Transfer API failed, trying unassign/assign approach:', transferError.message)
+          
+          // Fallback: Thử unassign rồi assign
+          try {
+            // Unassign từ tài khoản cũ
+            await accountsAPI.unassignKey(currentAccountId, currentKeyForTransfer.id)
+            
+            // Assign vào tài khoản mới
+            const assignResponse = await accountsAPI.assignKey(selectedTransferAccountId, currentKeyForTransfer.id)
+            
+            if (assignResponse.success) {
+              await fetchKeys(activeGroup)
+              await fetchAllKeys()
+              messageApi.success(`Đã chuyển key ${currentKeyForTransfer.code} sang tài khoản mới thành công!`)
+              handleTransferCancel()
+              return
+            } else {
+              throw new Error(assignResponse.message || 'Assign failed after unassign')
+            }
+          } catch (unassignAssignError) {
+            throw new Error(`Không thể chuyển key: ${unassignAssignError.message}`)
+          }
+        }
+      } else if (currentAccountId === selectedTransferAccountId) {
+        messageApi.warning(`Key ${currentKeyForTransfer.code} đã thuộc về tài khoản đích rồi!`)
+        handleTransferCancel()
+        return
+      } else {
+        // Không tìm được tài khoản hiện tại, có thể key chưa được gán
+        messageApi.warning(`Không tìm được tài khoản hiện tại sở hữu key ${currentKeyForTransfer.code}. Key có thể chưa được gán cho tài khoản nào.`)
+        
+        // Thử gán trực tiếp
+        try {
+          const response = await accountsAPI.assignKey(selectedTransferAccountId, currentKeyForTransfer.id)
+          
+          if (response.success) {
+            await fetchKeys(activeGroup)
+            await fetchAllKeys()
+            messageApi.success(`Đã gán key ${currentKeyForTransfer.code} vào tài khoản thành công!`)
+            handleTransferCancel()
+            return
+          } else {
+            throw new Error(response.message || 'Direct assign failed')
+          }
+        } catch (assignError) {
+          throw new Error(`Không thể gán key: ${assignError.message}`)
+        }
+      }
+      
+    } catch (error) {
+      console.error('Transfer key error details:', error)
+      
+      // Xử lý các loại lỗi khác nhau
+      let errorMessage = 'Lỗi không xác định'
+      
+      if (error.message.includes('Key not found or not available for assignment')) {
+        errorMessage = `Key ${currentKeyForTransfer.code} không khả dụng để chuyển. Key có thể đã được gán cho tài khoản khác hoặc đã hết hạn.`
+      } else if (error.message.includes('Account not found') || error.message.includes('One or both accounts not found')) {
+        errorMessage = 'Tài khoản nguồn hoặc đích không tồn tại.'
+      } else if (error.message.includes('maximum number of keys')) {
+        errorMessage = 'Tài khoản đích đã đạt số lượng key tối đa.'
+      } else if (error.message.includes('not currently assigned')) {
+        errorMessage = 'Key hiện không được gán cho tài khoản nguồn.'
+      } else if (error.message.includes('already assigned')) {
+        errorMessage = `Key ${currentKeyForTransfer.code} đã được gán cho tài khoản này.`
+      } else {
+        errorMessage = error.message || 'Lỗi chuyển key'
+      }
+      
+      messageApi.error(errorMessage)
+      handleTransferCancel()
+    }
+  }
+
   // Xuất TXT
   const handleExport = () => {
     const selectedKeys = keys.filter(k => k.selected && k.group === activeGroup)
@@ -364,6 +639,33 @@ const CreateKey = () => {
     {
       title: 'Thao tác', key: 'actions', render: (_, record) => (
         <Space>
+          {/* Chỉ hiển thị nút gán nếu key có trạng thái 'chờ' hoặc có thể gán được */}
+          {(record.status === 'chờ' || record.status === 'đang hoạt động') && (
+            <Button 
+              icon={<RetweetOutlined />} 
+              size="small" 
+              type="primary"
+              onClick={() => showAssignModal(record)}
+              title="Gán key vào tài khoản"
+              disabled={record.status !== 'chờ'} // Chỉ cho phép gán key có trạng thái 'chờ'
+            >
+              Gán
+            </Button>
+          )}
+          
+          {/* Nút chuyển key - chỉ hiển thị với key đang hoạt động */}
+          {record.status === 'đang hoạt động' && (
+            <Button 
+              icon={<SwapOutlined />} 
+              size="small" 
+              type="default"
+              onClick={() => showTransferModal(record)}
+              title="Chuyển key sang tài khoản khác"
+            >
+              Chuyển
+            </Button>
+          )}
+          
           <Popconfirm title="Xóa key này?" onConfirm={() => handleDeleteAccount(record.id)} okText="Xóa" cancelText="Hủy">
             <Button icon={<DeleteOutlined />} size="small" danger title="Xóa key" />
           </Popconfirm>
@@ -703,6 +1005,282 @@ const CreateKey = () => {
                 ? `Xóa tất cả ${filteredKeysForDelete.length} key`
                 : 'Xóa key'
               }
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+                  {/* Modal gán key vào tài khoản */}
+      <Modal
+        title={`Gán Key vào Tài khoản`}
+        open={isAssignModalOpen}
+        onCancel={handleAssignCancel}
+        footer={null}
+        width={800}
+      >
+        <div className="space-y-4">
+          {currentKeyForAssign && (
+            <div className="bg-blue-50 p-4 rounded-lg">
+              <h4 className="font-semibold mb-2">Thông tin key:</h4>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div><span className="font-medium">Mã key:</span> <span className="font-mono font-bold">{currentKeyForAssign.code}</span></div>
+                <div><span className="font-medium">Nhóm:</span> {currentKeyForAssign.group}</div>
+                <div>
+                  <span className="font-medium">Trạng thái:</span> 
+                  <span className={`ml-2 px-2 py-1 rounded text-xs ${
+                    currentKeyForAssign.status === 'chờ' ? 'bg-blue-100 text-blue-600' :
+                    currentKeyForAssign.status === 'đang hoạt động' ? 'bg-green-100 text-green-600' :
+                    currentKeyForAssign.status === 'hết hạn' ? 'bg-red-100 text-red-600' :
+                    'bg-gray-100 text-gray-600'
+                  }`}>
+                    {currentKeyForAssign.status}
+                  </span>
+                </div>
+                <div><span className="font-medium">Số ngày:</span> {currentKeyForAssign.days}</div>
+                <div><span className="font-medium">Loại key:</span> {currentKeyForAssign.accountCount} tài khoản/key</div>
+                <div><span className="font-medium">Khách hàng:</span> {currentKeyForAssign.customer || 'Không có'}</div>
+              </div>
+              
+              {currentKeyForAssign.status !== 'chờ' && (
+                <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded">
+                  <p className="text-sm text-yellow-700">
+                    <strong>⚠️ Lưu ý:</strong> Key này có trạng thái "{currentKeyForAssign.status}" và có thể không thể gán được. 
+                    Chỉ những key có trạng thái "chờ" mới có thể gán vào tài khoản.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div>
+            <h4 className="font-semibold mb-3">Chọn tài khoản có slot trống:</h4>
+            {loadingAccounts ? (
+              <div className="text-center py-8">
+                <Spin size="large" />
+                <p className="mt-2 text-gray-500">Đang tải danh sách tài khoản...</p>
+              </div>
+            ) : accounts.length === 0 ? (
+              <Alert
+                message="Không có tài khoản nào có slot trống"
+                description="Tất cả tài khoản đã đạt số key tối đa hoặc không có tài khoản nào."
+                type="info"
+                showIcon
+              />
+            ) : (
+              <div className="max-h-96 overflow-y-auto">
+                <Table
+                  size="small"
+                  pagination={false}
+                  rowKey="id"
+                  dataSource={accounts}
+                  rowSelection={{
+                    type: 'radio',
+                    selectedRowKeys: selectedAccountId ? [selectedAccountId] : [],
+                    onChange: (selectedRowKeys) => {
+                      setSelectedAccountId(selectedRowKeys[0] || null)
+                    }
+                  }}
+                  columns={[
+                    {
+                      title: 'Username',
+                      dataIndex: 'username',
+                      render: (text) => (
+                        <span className="font-mono font-semibold">{text}</span>
+                      )
+                    },
+                    {
+                      title: 'Slot key',
+                      render: (_, record) => (
+                        <span className="text-sm">
+                          {record.key_count || 0}/{record.max_keys || 3}
+                        </span>
+                      )
+                    },
+                    {
+                      title: 'Trạng thái',
+                      dataIndex: 'status',
+                      render: (status) => (
+                        <span className={`px-2 py-1 rounded text-xs ${
+                          status === 'active' ? 'bg-green-100 text-green-600' :
+                          status === 'suspended' ? 'bg-red-100 text-red-600' :
+                          'bg-gray-100 text-gray-600'
+                        }`}>
+                          {status === 'active' ? 'Hoạt động' : 
+                           status === 'suspended' ? 'Tạm khóa' : status}
+                        </span>
+                      )
+                    },
+                    {
+                      title: 'Hạn sử dụng',
+                      dataIndex: 'expires_at',
+                      render: (date) => {
+                        if (!date) return '-'
+                        const expireDate = new Date(date)
+                        const now = new Date()
+                        const isExpired = expireDate < now
+                        return (
+                          <span className={isExpired ? 'text-red-500' : 'text-green-600'}>
+                            {expireDate.toLocaleDateString('vi-VN')}
+                          </span>
+                        )
+                      }
+                    }
+                  ]}
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-3 justify-end pt-4 border-t">
+            <Button onClick={handleAssignCancel}>
+              Hủy
+            </Button>
+            <Button 
+              type="primary"
+              onClick={handleAssignKey}
+              disabled={!selectedAccountId || loadingAccounts || (currentKeyForAssign && currentKeyForAssign.status !== 'chờ')}
+              icon={<RetweetOutlined />}
+            >
+              {currentKeyForAssign && currentKeyForAssign.status !== 'chờ' 
+                ? `Không thể gán (${currentKeyForAssign.status})`
+                : 'Gán Key vào Tài khoản'
+              }
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal chuyển key sang tài khoản khác */}
+      <Modal
+        title={`Chuyển Key sang Tài khoản Khác`}
+        open={isTransferModalOpen}
+        onCancel={handleTransferCancel}
+        footer={null}
+        width={800}
+      >
+        <div className="space-y-4">
+          {currentKeyForTransfer && (
+            <div className="bg-orange-50 p-4 rounded-lg">
+              <h4 className="font-semibold mb-2">Thông tin key cần chuyển:</h4>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div><span className="font-medium">Mã key:</span> <span className="font-mono font-bold">{currentKeyForTransfer.code}</span></div>
+                <div><span className="font-medium">Nhóm:</span> {currentKeyForTransfer.group}</div>
+                <div>
+                  <span className="font-medium">Trạng thái:</span> 
+                  <span className={`ml-2 px-2 py-1 rounded text-xs ${
+                    currentKeyForTransfer.status === 'chờ' ? 'bg-blue-100 text-blue-600' :
+                    currentKeyForTransfer.status === 'đang hoạt động' ? 'bg-green-100 text-green-600' :
+                    currentKeyForTransfer.status === 'hết hạn' ? 'bg-red-100 text-red-600' :
+                    'bg-gray-100 text-gray-600'
+                  }`}>
+                    {currentKeyForTransfer.status}
+                  </span>
+                </div>
+                <div><span className="font-medium">Số ngày:</span> {currentKeyForTransfer.days}</div>
+                <div><span className="font-medium">Loại key:</span> {currentKeyForTransfer.accountCount} tài khoản/key</div>
+                <div><span className="font-medium">Khách hàng:</span> {currentKeyForTransfer.customer || 'Không có'}</div>
+              </div>
+              
+              <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded">
+                <p className="text-sm text-blue-700">
+                  <strong>💡 Lưu ý:</strong> Key này sẽ được chuyển từ tài khoản hiện tại sang tài khoản mới mà bạn chọn.
+                  Tài khoản cũ sẽ mất quyền sử dụng key này.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div>
+            <h4 className="font-semibold mb-3">Chọn tài khoản đích có slot trống:</h4>
+            {loadingTransferAccounts ? (
+              <div className="text-center py-8">
+                <Spin size="large" />
+                <p className="mt-2 text-gray-500">Đang tải danh sách tài khoản...</p>
+              </div>
+            ) : transferAccounts.length === 0 ? (
+              <Alert
+                message="Không có tài khoản nào có slot trống"
+                description="Tất cả tài khoản đã đạt số key tối đa hoặc không có tài khoản nào."
+                type="info"
+                showIcon
+              />
+            ) : (
+              <div className="max-h-96 overflow-y-auto">
+                <Table
+                  size="small"
+                  pagination={false}
+                  rowKey="id"
+                  dataSource={transferAccounts}
+                  rowSelection={{
+                    type: 'radio',
+                    selectedRowKeys: selectedTransferAccountId ? [selectedTransferAccountId] : [],
+                    onChange: (selectedRowKeys) => {
+                      setSelectedTransferAccountId(selectedRowKeys[0] || null)
+                    }
+                  }}
+                  columns={[
+                    {
+                      title: 'Username',
+                      dataIndex: 'username',
+                      render: (text) => (
+                        <span className="font-mono font-semibold">{text}</span>
+                      )
+                    },
+                    {
+                      title: 'Slot key',
+                      render: (_, record) => (
+                        <span className="text-sm">
+                          {record.key_count || 0}/{record.max_keys || 3}
+                        </span>
+                      )
+                    },
+                    {
+                      title: 'Trạng thái',
+                      dataIndex: 'status',
+                      render: (status) => (
+                        <span className={`px-2 py-1 rounded text-xs ${
+                          status === 'active' ? 'bg-green-100 text-green-600' :
+                          status === 'suspended' ? 'bg-red-100 text-red-600' :
+                          'bg-gray-100 text-gray-600'
+                        }`}>
+                          {status === 'active' ? 'Hoạt động' : 
+                           status === 'suspended' ? 'Tạm khóa' : status}
+                        </span>
+                      )
+                    },
+                    {
+                      title: 'Hạn sử dụng',
+                      dataIndex: 'expires_at',
+                      render: (date) => {
+                        if (!date) return '-'
+                        const expireDate = new Date(date)
+                        const now = new Date()
+                        const isExpired = expireDate < now
+                        return (
+                          <span className={isExpired ? 'text-red-500' : 'text-green-600'}>
+                            {expireDate.toLocaleDateString('vi-VN')}
+                          </span>
+                        )
+                      }
+                    }
+                  ]}
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-3 justify-end pt-4 border-t">
+            <Button onClick={handleTransferCancel}>
+              Hủy
+            </Button>
+            <Button 
+              type="primary"
+              onClick={handleTransferKey}
+              disabled={!selectedTransferAccountId || loadingTransferAccounts}
+              icon={<SwapOutlined />}
+              style={{ backgroundColor: '#f59e0b', borderColor: '#f59e0b' }}
+            >
+              Chuyển Key sang Tài khoản Đích
             </Button>
           </div>
         </div>

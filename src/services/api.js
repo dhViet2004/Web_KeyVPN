@@ -175,6 +175,10 @@ export const accountsAPI = {
   // Get available keys for assignment
   getAvailableKeys: () =>
     apiClient.get('/accounts/available-keys'),
+
+  // Transfer key from one account to another
+  transferKey: (keyId, fromAccountId, toAccountId) =>
+    apiClient.post('/accounts/transfer-key', { keyId, fromAccountId, toAccountId }),
 };
 
 // Gift API
