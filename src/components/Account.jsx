@@ -1,22 +1,30 @@
-import { useState } from 'react'
-import { Table, Button, Input, Space, Modal, DatePicker, Upload, Typography, Popconfirm, App, Select, InputNumber } from 'antd'
-import { EyeOutlined, EditOutlined, DeleteOutlined, UploadOutlined, PlusOutlined, FilterOutlined, CalendarOutlined, ClockCircleOutlined } from '@ant-design/icons'
+import { useState, useEffect } from 'react'
+import { Table, Button, Input, Space, Modal, DatePicker, Upload, Typography, Popconfirm, App, Select, InputNumber, Checkbox, Spin, Alert, Tag } from 'antd'
+import { EyeOutlined, EditOutlined, DeleteOutlined, UploadOutlined, PlusOutlined, FilterOutlined, CalendarOutlined, ClockCircleOutlined, ReloadOutlined, KeyOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import { useAccounts } from '../hooks/useAccounts'
+import { accountsAPI } from '../services/api'
 
 const { Title } = Typography
 
-// Tạo dữ liệu mẫu
-const mockAccounts = Array.from({ length: 8 }, (_, i) => ({
-  id: i + 1,
-  username: `vpnuser${i + 1}`,
-  password: 'xincamon',
-  expire: dayjs().add(72 - i * 10, 'hour').toISOString(),
-  selected: false,
-}))
-
 const Account = () => {
   const { message: messageApi } = App.useApp()
-  const [accounts, setAccounts] = useState(mockAccounts)
+  const { 
+    accounts: backendAccounts, 
+    loading: accountsLoading, 
+    error: accountsError, 
+    fetchAccounts, 
+    createAccount, 
+    updateAccount, 
+    deleteAccount, 
+    bulkExtend,
+    assignKey,
+    unassignKey,
+    getAccountKeys
+  } = useAccounts()
+  
+  // Transform backend accounts to match frontend structure
+  const [accounts, setAccounts] = useState([])
   const [editing, setEditing] = useState(null) // {id, username, key, expire}
   const [viewing, setViewing] = useState(null) // {id, username, key, expire}
   const [uploading, setUploading] = useState(false)
@@ -25,6 +33,59 @@ const Account = () => {
   const [flexibleTime, setFlexibleTime] = useState({ days: 0, hours: 0, minutes: 0, seconds: 0 })
   const [batchEditModal, setBatchEditModal] = useState(false)
   const [batchExpireTime, setBatchExpireTime] = useState(dayjs().add(72, 'hour'))
+  const [keyManageModal, setKeyManageModal] = useState(false)
+  const [selectedAccount, setSelectedAccount] = useState(null)
+  const [accountKeys, setAccountKeys] = useState([])
+  const [availableKeys, setAvailableKeys] = useState([])
+  const [keyLoading, setKeyLoading] = useState(false)
+
+  // Transform backend accounts to frontend format
+  useEffect(() => {
+    let rawAccounts = [];
+    if (Array.isArray(backendAccounts)) {
+      rawAccounts = backendAccounts;
+    } else if (backendAccounts && Array.isArray(backendAccounts.accounts)) {
+      rawAccounts = backendAccounts.accounts;
+    } else if (backendAccounts && Array.isArray(backendAccounts.data)) {
+      rawAccounts = backendAccounts.data;
+    }
+    
+    if (rawAccounts && rawAccounts.length > 0) {
+      const transformedAccounts = rawAccounts.map(acc => ({
+        id: acc.id,
+        username: acc.username,
+        password: acc.password,
+        expire: acc.expires_at,
+        selected: false,
+        status: acc.status || 'hoạt động',
+        isActive: acc.is_active,
+        keyCode: acc.key_code || '',
+        keyGroup: acc.group_code || '',
+        secondsRemaining: acc.seconds_remaining || 0,
+        createdAt: acc.created_at,
+        lastUsed: acc.last_used,
+        usageCount: acc.usage_count || 0,
+        assigned_keys: acc.assigned_keys || '0/3' // Add assigned_keys to the transformed account
+      }))
+      setAccounts(transformedAccounts)
+    } else {
+      setAccounts([])
+    }
+  }, [backendAccounts])
+
+  // Refresh accounts periodically
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchAccounts({ timeFilter })
+    }, 30000) // Refresh every 30 seconds
+    
+    return () => clearInterval(interval)
+  }, [fetchAccounts, timeFilter])
+
+  // Initial fetch on component mount
+  useEffect(() => {
+    fetchAccounts({ timeFilter: 'all' });
+  }, [fetchAccounts])
 
   // Đếm ngược thời gian
   const getCountdown = (expire) => {
@@ -39,47 +100,12 @@ const Account = () => {
     return `${d} ngày ${h} giờ ${m} phút ${s} giây`
   }
 
-  // Lọc tài khoản theo thời gian
+  // Lọc tài khoản theo thời gian - now using backend API
   const getFilteredAccounts = () => {
+    // For 'flexible' and 'custom' filters, we still need client-side filtering
+    // as the backend doesn't support these complex filters yet
     const now = dayjs()
     switch (timeFilter) {
-      case 'expired':
-        return accounts.filter(acc => dayjs(acc.expire).diff(now, 'second') <= 0)
-      case '1hour':
-        return accounts.filter(acc => {
-          const diff = dayjs(acc.expire).diff(now, 'minute')
-          return diff > 0 && diff <= 60
-        })
-      case '6hours':
-        return accounts.filter(acc => {
-          const diff = dayjs(acc.expire).diff(now, 'hour')
-          return diff > 0 && diff <= 6
-        })
-      case '12hours':
-        return accounts.filter(acc => {
-          const diff = dayjs(acc.expire).diff(now, 'hour')
-          return diff > 0 && diff <= 12
-        })
-      case '1day':
-        return accounts.filter(acc => {
-          const diff = dayjs(acc.expire).diff(now, 'hour')
-          return diff > 0 && diff <= 24
-        })
-      case '3days':
-        return accounts.filter(acc => {
-          const diff = dayjs(acc.expire).diff(now, 'hour')
-          return diff > 0 && diff <= 72
-        })
-      case '7days':
-        return accounts.filter(acc => {
-          const diff = dayjs(acc.expire).diff(now, 'day')
-          return diff > 0 && diff <= 7
-        })
-      case '30days':
-        return accounts.filter(acc => {
-          const diff = dayjs(acc.expire).diff(now, 'day')
-          return diff > 0 && diff <= 30
-        })
       case 'custom':
         if (!customTimeRange.start || !customTimeRange.end) return accounts
         return accounts.filter(acc => {
@@ -95,13 +121,21 @@ const Account = () => {
         })
       }
       default:
+        // For standard filters, backend already filtered the data
         return accounts
     }
   }
 
+  // Fetch accounts when time filter changes (for backend-supported filters)
+  useEffect(() => {
+    if (['all', 'expired', '1hour', '6hours', '12hours', '1day', '3days', '7days', '30days'].includes(timeFilter)) {
+      fetchAccounts({ timeFilter })
+    }
+  }, [timeFilter, fetchAccounts])
+
   const filteredAccounts = getFilteredAccounts()
 
-  // Thống kê tài khoản theo thời gian
+  // Thống kê tài khoản theo thời gian - calculate from current data
   const getAccountStats = () => {
     const now = dayjs()
     const stats = {
@@ -147,6 +181,7 @@ const Account = () => {
     return stats
   }
 
+  // Recalculate stats when accounts or flexible time changes
   const accountStats = getAccountStats()
 
   // Chỉnh sửa hàng loạt thời gian hết hạn
@@ -159,16 +194,16 @@ const Account = () => {
     setBatchEditModal(true)
   }
 
-  const handleBatchEditSave = () => {
-    const selectedIds = filteredAccounts.filter(a => a.selected).map(a => a.id)
-    setAccounts(accs => accs.map(a => 
-      selectedIds.includes(a.id) 
-        ? { ...a, expire: batchExpireTime.toISOString() }
-        : a
-    ))
-    setBatchEditModal(false)
-    setAccounts(accs => accs.map(a => ({ ...a, selected: false })))
-    messageApi.success(`Đã cập nhật thời gian hết hạn cho ${selectedIds.length} tài khoản!`)
+  const handleBatchEditSave = async () => {
+    try {
+      const selectedIds = filteredAccounts.filter(a => a.selected).map(a => a.id)
+      await bulkExtend(selectedIds, batchExpireTime.format('YYYY-MM-DD HH:mm:ss'))
+      setBatchEditModal(false)
+      setAccounts(accs => accs.map(a => ({ ...a, selected: false })))
+      messageApi.success(`Đã cập nhật thời gian hết hạn cho ${selectedIds.length} tài khoản!`)
+    } catch (error) {
+      messageApi.error(error.message || 'Lỗi khi cập nhật thời gian hết hạn!')
+    }
   }
 
   // Tự động xóa tài khoản hết hạn
@@ -188,69 +223,241 @@ const Account = () => {
       filteredIds.includes(a.id) ? { ...a, selected: newSelectState } : a
     ))
   }
-  const handleDeleteSelected = () => {
+  const handleDeleteSelected = async () => {
     const selectedAccounts = filteredAccounts.filter(a => a.selected)
     if (selectedAccounts.length === 0) {
       messageApi.warning('Vui lòng chọn ít nhất một tài khoản để xóa!')
       return
     }
-    setAccounts(accs => accs.filter(a => !a.selected))
-    messageApi.success(`Đã xóa ${selectedAccounts.length} tài khoản đã chọn!`)
+    
+    try {
+      
+      // Delete each selected account sequentially to better handle errors
+      let successCount = 0
+      let errorCount = 0
+      const errors = []
+      
+      for (const account of selectedAccounts) {
+        try {
+          await deleteAccount(account.id)
+          successCount++
+        } catch (error) {
+          errorCount++
+          errors.push(`${account.username}: ${error.message}`)
+          console.error(`❌ Failed to delete account ${account.username}:`, error.message)
+        }
+      }
+      
+      // Clear selection regardless of results
+      setAccounts(accs => accs.map(a => ({ ...a, selected: false })))
+      
+      // Refresh account list
+      fetchAccounts({ timeFilter })
+      
+      // Show appropriate message
+      if (errorCount === 0) {
+        messageApi.success(`Đã xóa thành công ${successCount} tài khoản!`)
+      } else if (successCount === 0) {
+        messageApi.error(`Không thể xóa tài khoản nào. Lỗi: ${errors.join(', ')}`)
+      } else {
+        messageApi.warning(`Đã xóa ${successCount} tài khoản, ${errorCount} tài khoản lỗi.`)
+        console.warn('Delete errors:', errors)
+      }
+      
+    } catch (error) {
+      console.error('Batch delete error:', error)
+      messageApi.error('Lỗi không xác định khi xóa tài khoản!')
+    }
   }
-  const handleDelete = id => {
-    setAccounts(accs => accs.filter(a => a.id !== id))
-    messageApi.success('Đã xóa tài khoản!')
+  
+  const handleDelete = async (id) => {
+    try {
+      await deleteAccount(id)
+      
+      // Refresh account list after successful deletion
+      fetchAccounts({ timeFilter })
+      
+      messageApi.success('Đã xóa tài khoản thành công!')
+    } catch (error) {
+      console.error('Single delete error:', error)
+      messageApi.error(error.message || 'Lỗi khi xóa tài khoản!')
+    }
   }
 
   // Xem/chỉnh sửa
   const handleView = acc => setViewing(acc)
   const handleEdit = acc => setEditing(acc)
-  const handleEditSave = () => {
-    // Kiểm tra tên tài khoản khi thêm mới
-    if (!editing.id && (!editing.username || editing.username.trim() === '')) {
-      messageApi.error('Vui lòng nhập tên tài khoản!')
-      return
-    }
-    
-    if (!editing.id) {
-      // Thêm tài khoản mới
-      const newAccount = {
-        id: Date.now(),
-        username: editing.username.trim(),
-        password: editing.password,
-        expire: editing.expire,
-        selected: false
+  const handleEditSave = async () => {
+    try {
+      // Kiểm tra tên tài khoản khi thêm mới
+      if (!editing.id && (!editing.username || editing.username.trim() === '')) {
+        messageApi.error('Vui lòng nhập tên tài khoản!')
+        return
       }
-      setAccounts(accs => [newAccount, ...accs])
-      messageApi.success('Đã thêm tài khoản mới!')
-    } else {
-      // Cập nhật tài khoản hiện có
-      setAccounts(accs => accs.map(a => a.id === editing.id ? { ...a, password: editing.password, expire: editing.expire } : a))
-      messageApi.success('Đã cập nhật tài khoản!')
+      
+      if (!editing.id) {
+        // Thêm tài khoản mới
+        await createAccount({
+          username: editing.username.trim(),
+          password: editing.password,
+          expires_at: dayjs(editing.expire).format('YYYY-MM-DD HH:mm:ss')
+        })
+        messageApi.success('Đã thêm tài khoản mới!')
+      } else {
+        // Cập nhật tài khoản hiện có
+        await updateAccount(editing.id, {
+          password: editing.password,
+          expires_at: dayjs(editing.expire).format('YYYY-MM-DD HH:mm:ss')
+        })
+        messageApi.success('Đã cập nhật tài khoản!')
+      }
+      setEditing(null)
+    } catch (error) {
+      messageApi.error(error.message || 'Lỗi khi lưu tài khoản!')
     }
-    setEditing(null)
   }
 
   // Upload file txt
-  const handleUpload = (file) => {
+  const handleUpload = async (file) => {
     setUploading(true)
     const reader = new FileReader()
-    reader.onload = (e) => {
-      const lines = e.target.result.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
-      const newAccs = lines.map((username, idx) => ({
-        id: Date.now() + idx,
-        username,
-        password: 'xincamon',
-        key: '',
-        expire: dayjs().add(72, 'hour').toISOString(),
-        selected: false,
-      }))
-      setAccounts(accs => [...newAccs, ...accs])
-      setUploading(false)
-      messageApi.success('Đã thêm tài khoản từ file!')
+    reader.onload = async (e) => {
+      try {
+        const lines = e.target.result.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+        
+        let successCount = 0
+        let skipCount = 0
+        let errorCount = 0
+        const errors = []
+        
+        // Process accounts one by one to handle duplicates
+        for (let i = 0; i < lines.length; i++) {
+          const username = lines[i]
+          try {
+            await createAccount({
+              username,
+              password: 'xincamon',
+              expires_at: dayjs().add(72, 'hour').format('YYYY-MM-DD HH:mm:ss')
+            })
+            successCount++
+          } catch (error) {
+            if (error.message.includes('already exists') || error.message.includes('DUPLICATE_USERNAME')) {
+              skipCount++
+            } else {
+              errorCount++
+              errors.push(`${username}: ${error.message}`)
+              console.error(`❌ Failed to create account ${username}:`, error.message)
+            }
+          }
+        }
+        
+        setUploading(false)
+        
+        // Show detailed result message
+        let message = `Kết quả: `
+        if (successCount > 0) message += `${successCount} tài khoản mới được tạo. `
+        if (skipCount > 0) message += `${skipCount} tài khoản đã tồn tại (bỏ qua). `
+        if (errorCount > 0) message += `${errorCount} tài khoản lỗi.`
+        
+        if (errorCount === 0) {
+          messageApi.success(message)
+        } else {
+          messageApi.warning(message)
+          if (errors.length > 0) {
+            console.warn('Upload errors:', errors)
+          }
+        }
+        
+      } catch (error) {
+        setUploading(false)
+        messageApi.error(error.message || 'Lỗi khi tải lên file!')
+        console.error('Upload file error:', error)
+      }
     }
     reader.readAsText(file)
     return false
+  }
+
+  // Key management functions
+  const handleManageKeys = async (account) => {
+    setSelectedAccount(account)
+    setKeyLoading(true)
+    setKeyManageModal(true)
+    
+    try {
+      // Get keys assigned to this account
+      const keysResponse = await getAccountKeys(account.id)
+      setAccountKeys(keysResponse || [])
+      
+      // Get available keys from backend API
+      try {
+        const response = await accountsAPI.getAvailableKeys()
+        setAvailableKeys(response.data || [])
+      } catch (error) {
+        console.warn('Could not load available keys:', error);
+        setAvailableKeys([])
+      }
+    } catch (error) {
+      console.error('Get account keys error:', error)
+      if (error.message.includes('not fully configured') || error.message.includes('503')) {
+        messageApi.warning('Hệ thống quản lý key chưa được cấu hình đầy đủ. Chỉ hiển thị dữ liệu mẫu.')
+        // Set empty data when system is not configured
+        setAccountKeys([])
+        setAvailableKeys([])
+      } else {
+        messageApi.error(error.message || 'Lỗi khi tải danh sách key!')
+        setAccountKeys([])
+        setAvailableKeys([])
+      }
+    } finally {
+      setKeyLoading(false)
+    }
+  }
+
+  const handleAssignKey = async (keyId) => {
+    try {
+      await assignKey(selectedAccount.id, keyId)
+      messageApi.success('Đã gán key thành công!')
+      
+      // Refresh account keys
+      const keys = await getAccountKeys(selectedAccount.id)
+      setAccountKeys(keys)
+      
+      // Refresh account list to update assigned_keys count
+      fetchAccounts({ timeFilter })
+    } catch (error) {
+      console.error('Assign key error:', error)
+      if (error.message.includes('not fully configured') || error.message.includes('503')) {
+        messageApi.warning('Hệ thống quản lý key chưa được cấu hình đầy đủ. Vui lòng liên hệ quản trị viên.')
+      } else if (error.message.includes('Account not found') || error.message.includes('404')) {
+        messageApi.error('Không tìm thấy tài khoản hoặc key. Vui lòng thử lại.')
+      } else {
+        messageApi.error(error.message || 'Lỗi khi gán key!')
+      }
+    }
+  }
+
+  const handleUnassignKey = async (keyId) => {
+    try {
+      await unassignKey(selectedAccount.id, keyId)
+      messageApi.success('Đã bỏ gán key thành công!')
+      
+      // Refresh account keys
+      const keys = await getAccountKeys(selectedAccount.id)
+      setAccountKeys(keys)
+      
+      // Refresh account list to update assigned_keys count
+      fetchAccounts({ timeFilter })
+    } catch (error) {
+      console.error('Unassign key error:', error)
+      if (error.message.includes('not fully configured') || error.message.includes('503')) {
+        messageApi.warning('Hệ thống quản lý key chưa được cấu hình đầy đủ. Vui lòng liên hệ quản trị viên.')
+      } else if (error.message.includes('not found') || error.message.includes('404')) {
+        messageApi.error('Không tìm thấy key assignment. Vui lòng thử lại.')
+      } else {
+        messageApi.error(error.message || 'Lỗi khi bỏ gán key!')
+      }
+    }
   }
 
   // Table columns
@@ -259,8 +466,7 @@ const Account = () => {
   
   const columns = [
     {
-      title: <Input 
-        type="checkbox" 
+      title: <Checkbox 
         checked={allFilteredSelected} 
         indeterminate={someFilteredSelected && !allFilteredSelected}
         onChange={handleSelectAll} 
@@ -268,16 +474,19 @@ const Account = () => {
       dataIndex: 'selected', 
       key: 'selected', 
       width: 40,
-      render: (_, record) => <Input type="checkbox" checked={record.selected} onChange={() => handleSelect(record.id)} />
+      render: (_, record) => <Checkbox checked={record.selected} onChange={() => handleSelect(record.id)} />
     },
     { title: 'Tài khoản', dataIndex: 'username', key: 'username', render: v => <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{v}</span> },
     { title: 'Mật khẩu', dataIndex: 'password', key: 'password', render: v => <span style={{ fontFamily: 'monospace' }}>{v}</span> },
     { title: 'Thời gian còn lại', dataIndex: 'expire', key: 'expire', render: v => getCountdown(v) },
+    // Thêm cột Key đã gán
+    { title: 'Key đã gán', dataIndex: 'assigned_keys', key: 'assigned_keys', render: v => <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{v}</span> },
     {
       title: 'Thao tác', key: 'actions', render: (_, record) => (
         <Space>
           <Button icon={<EyeOutlined />} size="small" onClick={() => handleView(record)} title="Xem" />
           <Button icon={<EditOutlined />} size="small" onClick={() => handleEdit(record)} title="Chỉnh sửa" />
+          <Button icon={<KeyOutlined />} size="small" onClick={() => handleManageKeys(record)} title="Quản lý Key" />
           <Popconfirm title="Xóa tài khoản này?" onConfirm={() => handleDelete(record.id)} okText="Xóa" cancelText="Hủy">
             <Button icon={<DeleteOutlined />} size="small" danger title="Xóa" />
           </Popconfirm>
@@ -292,7 +501,59 @@ const Account = () => {
 
   return (
     <div className="w-full max-w-3xl mx-auto bg-white p-2 sm:p-8 rounded-2xl shadow-md mt-2 sm:mt-6 transition-all">
-      <Title level={3} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 20 }}>Quản lý tài khoản VPN</Title>
+      <Title level={3} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 20 }}>
+        Quản lý tài khoản VPN
+        <Button 
+          icon={<ReloadOutlined />} 
+          size="small" 
+          onClick={() => {
+            fetchAccounts({ timeFilter });
+          }}
+          loading={accountsLoading}
+          title="Tải lại danh sách"
+        />
+        <Button 
+          size="small" 
+          type="dashed"
+          onClick={() => {
+            console.log('Debug info:');
+            console.log('accounts:', accounts);
+            console.log('backendAccounts:', backendAccounts);
+            console.log('accountsLoading:', accountsLoading);
+            console.log('accountsError:', accountsError);
+          }}
+          title="Debug Info"
+        >
+          Debug
+        </Button>
+      </Title>
+      
+      {/* Error Alert */}
+      {accountsError && (
+        <Alert
+          message="Lỗi kết nối"
+          description={accountsError}
+          type="error"
+          action={
+            <Button 
+              size="small" 
+              danger 
+              onClick={() => fetchAccounts({ timeFilter })}
+            >
+              Thử lại
+            </Button>
+          }
+          className="mb-4"
+          closable
+        />
+      )}
+      
+      {/* Loading Spinner */}
+      {accountsLoading && accounts.length === 0 && (
+        <div className="flex justify-center items-center h-40">
+          <Spin size="large" />
+        </div>
+      )}
       
       {/* Bộ lọc theo thời gian */}
       <div className="mb-4 p-4 bg-gray-50 rounded-lg">
@@ -326,6 +587,7 @@ const Account = () => {
                 setTimeFilter('all')
                 setCustomTimeRange({ start: null, end: null })
                 setFlexibleTime({ days: 0, hours: 0, minutes: 0, seconds: 0 })
+                fetchAccounts({ timeFilter: 'all' })
               }}
               title="Reset bộ lọc"
             >
@@ -655,6 +917,10 @@ const Account = () => {
           bordered
           size="middle"
           style={{ borderRadius: 12, minWidth: 600 }}
+          loading={accountsLoading}
+          locale={{
+            emptyText: accountsError ? 'Không thể tải dữ liệu' : 'Chưa có tài khoản nào'
+          }}
         />
       </div>
       {/* Modal xem tài khoản */}
@@ -662,8 +928,16 @@ const Account = () => {
         {viewing && (
           <div className="space-y-2">
             <div><b>Tài khoản:</b> <span className="font-mono">{viewing.username}</span></div>
-            <div><b>Mật khẩu:</b> <span className="font-mono">xincamon</span></div>
+            <div><b>Mật khẩu:</b> <span className="font-mono">{viewing.password}</span></div>
+            <div><b>Trạng thái:</b> <span className={`font-medium ${viewing.status === 'active' ? 'text-green-600' : viewing.status === 'expired' ? 'text-red-600' : 'text-orange-600'}`}>
+              {viewing.status === 'active' ? 'Hoạt động' : viewing.status === 'expired' ? 'Đã hết hạn' : 'Sắp hết hạn'}
+            </span></div>
             <div><b>Thời gian còn lại:</b> {getCountdown(viewing.expire)}</div>
+            {viewing.keyCode && <div><b>Key code:</b> <span className="font-mono">{viewing.keyCode}</span></div>}
+            {viewing.keyGroup && <div><b>Nhóm key:</b> <span className="font-mono">{viewing.keyGroup}</span></div>}
+            {viewing.usageCount !== undefined && <div><b>Số lần sử dụng:</b> {viewing.usageCount}</div>}
+            {viewing.lastUsed && <div><b>Lần sử dụng cuối:</b> {dayjs(viewing.lastUsed).format('DD/MM/YYYY HH:mm:ss')}</div>}
+            <div><b>Ngày tạo:</b> {dayjs(viewing.createdAt).format('DD/MM/YYYY HH:mm:ss')}</div>
           </div>
         )}
       </Modal>
@@ -709,6 +983,121 @@ const Account = () => {
             />
           </div>
         </div>
+      </Modal>
+
+      {/* Modal quản lý Key */}
+      <Modal 
+        open={keyManageModal} 
+        onCancel={() => setKeyManageModal(false)} 
+        footer={null}
+        title={`Quản lý Key - ${selectedAccount?.username}`}
+        width={800}
+      >
+        {selectedAccount && (
+          <div className="space-y-6">
+            {/* Thông tin tài khoản */}
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <h4 className="font-medium mb-2">Thông tin tài khoản:</h4>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div><strong>Tài khoản:</strong> {selectedAccount.username}</div>
+                <div><strong>Key đã gán:</strong> {selectedAccount.assigned_keys}</div>
+                <div><strong>Trạng thái:</strong> 
+                  <span className={`ml-2 px-2 py-1 rounded text-xs ${
+                    selectedAccount.status === 'hoạt động' ? 'bg-green-100 text-green-600' :
+                    selectedAccount.status === 'hết hạn' ? 'bg-red-100 text-red-600' :
+                    'bg-orange-100 text-orange-600'
+                  }`}>
+                    {selectedAccount.status}
+                  </span>
+                </div>
+                <div><strong>Hết hạn:</strong> {dayjs(selectedAccount.expire).format('DD/MM/YYYY HH:mm:ss')}</div>
+              </div>
+            </div>
+
+            <Spin spinning={keyLoading}>
+              {/* Keys đã gán */}
+              <div>
+                <h4 className="font-medium mb-4 flex items-center gap-2">
+                  <KeyOutlined />
+                  Keys đã gán ({accountKeys.length}/3)
+                </h4>
+                {accountKeys.length > 0 ? (
+                  <div className="space-y-2 mb-4">
+                    {accountKeys.map(key => (
+                      <div key={key.id} className="flex items-center justify-between p-3 border rounded-lg">
+                        <div className="flex items-center gap-4">
+                          <Tag color={key.status === 'đang hoạt động' ? 'green' : key.status === 'hết hạn' ? 'red' : 'orange'}>
+                            {key.code}
+                          </Tag>
+                          <span className="text-sm text-gray-600">{key.group_name}</span>
+                          <span className="text-xs text-gray-400">
+                            Gán lúc: {dayjs(key.assigned_at).format('DD/MM/YYYY HH:mm')}
+                          </span>
+                        </div>
+                        <Popconfirm 
+                          title="Bỏ gán key này?" 
+                          onConfirm={() => handleUnassignKey(key.id)}
+                          okText="Bỏ gán" 
+                          cancelText="Hủy"
+                        >
+                          <Button size="small" danger>Bỏ gán</Button>
+                        </Popconfirm>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-gray-500">
+                    Chưa có key nào được gán
+                  </div>
+                )}
+              </div>
+
+              {/* Keys có sẵn để gán */}
+              {accountKeys.length < 3 && (
+                <div>
+                  <h4 className="font-medium mb-4">Keys có sẵn để gán:</h4>
+                  {availableKeys.length > 0 ? (
+                    <div className="space-y-2">
+                      {availableKeys
+                        .filter(key => !accountKeys.some(ak => ak.id === key.id))
+                        .map(key => (
+                          <div key={key.id} className="flex items-center justify-between p-3 border rounded-lg">
+                            <div className="flex items-center gap-4">
+                              <Tag color={key.status === 'chờ' ? 'blue' : 'green'}>
+                                {key.code}
+                              </Tag>
+                              <span className="text-sm text-gray-600">{key.group_name}</span>
+                              <span className="text-xs text-gray-400">Trạng thái: {key.status}</span>
+                            </div>
+                            <Button 
+                              size="small" 
+                              type="primary"
+                              onClick={() => handleAssignKey(key.id)}
+                            >
+                              Gán Key
+                            </Button>
+                          </div>
+                        ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-gray-500">
+                      Không có key nào có sẵn
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {accountKeys.length >= 3 && (
+                <Alert 
+                  message="Đã đạt giới hạn tối đa" 
+                  description="Tài khoản này đã được gán tối đa 3 keys. Vui lòng bỏ gán một số key trước khi gán key mới."
+                  type="warning" 
+                  showIcon 
+                />
+              )}
+            </Spin>
+          </div>
+        )}
       </Modal>
     </div>
   )

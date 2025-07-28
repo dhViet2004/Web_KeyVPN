@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { FaKey, FaGift, FaRegClock, FaCheckCircle, FaExclamationTriangle, FaTimesCircle } from 'react-icons/fa'
 import NotificationModal from './NotificationModal'
 import { useSettings } from '../hooks/useSettings'
+import { publicAPI, utils } from '../services/api'
 
 const getStatusColor = (days, error) => {
   if (error) return 'bg-red-50 text-red-700 border-red-300'
@@ -22,6 +23,8 @@ const AuthKey = () => {
   const [days, setDays] = useState(null) // null: chưa xác thực, số: ngày còn lại
   const [error, setError] = useState(false)
   const [showNotification, setShowNotification] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [_keyInfo, setKeyInfo] = useState(null)
   const { settings } = useSettings()
 
   // Hiển thị notification mỗi khi load trang
@@ -36,16 +39,56 @@ const AuthKey = () => {
     return () => clearTimeout(timer)
   }, [settings]) // Dependency là settings object
 
-  // Dummy handle submit
-  const handleSubmit = e => {
+  // Xác thực key với API
+  const handleSubmit = async (e) => {
     e.preventDefault()
-    // Giả lập xác thực key
-    if (key === 'error') {
+    if (!key.trim()) return
+    
+    setLoading(true)
+    try {
+      const response = await publicAPI.checkKey(key.trim())
+      
+      if (response.success && response.data) {
+        setError(false)
+        setKeyInfo(response.data)
+        setDays(response.data.days_remaining || 0)
+      } else {
+        setError(true)
+        setDays(0)
+        setKeyInfo(null)
+      }
+    } catch (error) {
+      console.error('Key validation error:', error)
       setError(true)
       setDays(0)
-    } else if (key) {
-      setError(false)
-      setDays(Math.floor(Math.random() * 10))
+      setKeyInfo(null)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Sử dụng gift code
+  const handleGiftSubmit = async (e) => {
+    e.preventDefault()
+    if (!gift.trim() || !key.trim()) return
+    
+    setLoading(true)
+    try {
+      const response = await publicAPI.useGiftCode(gift.trim(), key.trim())
+      
+      if (response.success) {
+        // Refresh key info
+        await handleSubmit(e)
+        setGift('')
+        alert(`Đã thêm ${response.data.bonusDays} ngày vào key của bạn!`)
+      } else {
+        alert(response.message || 'Gift code không hợp lệ!')
+      }
+    } catch (error) {
+      console.error('Gift code error:', error)
+      alert(utils.handleError(error))
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -66,7 +109,13 @@ const AuthKey = () => {
             onChange={e => setKey(e.target.value)}
           />
         </div>
-        <button type="submit" className="bg-blue-500 !text-white py-2 rounded-xl font-semibold hover:bg-blue-600 transition w-full text-base shadow">Xác thực key</button>
+        <button 
+          type="submit" 
+          className="bg-blue-500 !text-white py-2 rounded-xl font-semibold hover:bg-blue-600 transition w-full text-base shadow disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={loading}
+        >
+          {loading ? 'Đang xác thực...' : 'Xác thực key'}
+        </button>
       </form>
       {days !== null && (
         <div className={`border-l-4 p-3 mb-4 flex items-center gap-2 ${getStatusColor(days, error)} text-base rounded-xl shadow-sm`}> 
@@ -74,7 +123,7 @@ const AuthKey = () => {
           {error ? 'Key không hợp lệ hoặc đã hết hạn!' : days > 5 ? `Thời gian còn lại: ${days} ngày` : days > 0 ? `Thời gian còn lại: ${days} ngày (Sắp hết hạn!)` : 'Key đã hết hạn!'}
         </div>
       )}
-      <form className="flex flex-col sm:flex-row gap-2 mb-4">
+      <form onSubmit={handleGiftSubmit} className="flex flex-col sm:flex-row gap-2 mb-4">
         <div className="relative flex-1 flex items-center">
           <FaGift className="absolute left-3 text-pink-300" size={18} />
           <input
@@ -85,7 +134,14 @@ const AuthKey = () => {
             onChange={e => setGift(e.target.value)}
           />
         </div>
-        <button type="button" className="bg-pink-500 !text-white px-4 py-2 rounded-xl font-semibold hover:bg-pink-600 transition w-full sm:w-auto text-base shadow flex items-center justify-center gap-2"><FaRegClock size={18}/>Nhận thêm ngày</button>
+        <button 
+          type="submit" 
+          className="bg-pink-500 !text-white px-4 py-2 rounded-xl font-semibold hover:bg-pink-600 transition w-full sm:w-auto text-base shadow flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={loading || !key.trim()}
+        >
+          <FaRegClock size={18}/>
+          {loading ? 'Đang xử lý...' : 'Nhận thêm ngày'}
+        </button>
       </form>
       <div className="font-bold text-red-500 uppercase text-xs sm:text-sm text-center sm:text-left bg-red-50 rounded-xl p-3 shadow-sm mt-2">
         Lưu ý: Khi tài khoản xback hết hạn hoặc còn 5 tiếng, các bạn quay lại trang này sử dụng lại key còn hiệu lực để nhận tài khoản xback mới nhé. Cảm ơn mọi người đã ủng hộ ^^

@@ -1,0 +1,6 @@
+{
+  "name": "database-setup",
+  "scripts": {
+    "check-db": "node scripts/check-and-create-tables.js"
+  }
+}

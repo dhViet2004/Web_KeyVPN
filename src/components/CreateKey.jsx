@@ -1,20 +1,13 @@
-import { useState } from 'react'
-import { PlusOutlined, DeleteOutlined, SyncOutlined, FileTextOutlined, SearchOutlined, UserOutlined, UnorderedListOutlined } from '@ant-design/icons'
-import { Button, Input, Select, Table, Radio, Space, Typography, Divider, Form, Tabs, Modal, App } from 'antd'
+import { useState, useEffect } from 'react'
+import { PlusOutlined, DeleteOutlined, FileTextOutlined, SearchOutlined, UserOutlined, UnorderedListOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Button, Input, Select, Table, Radio, Space, Typography, Divider, Form, Tabs, Modal, App, Spin, Alert, Popconfirm } from 'antd'
 import { useSettings } from '../hooks/useSettings'
+import { useKeys } from '../hooks/useKeys'
+import { keysAPI } from '../services/api'
 
 const { Title } = Typography
 const { Option } = Select
 
-function randomKey(prefix = 'FBX') {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-  const nums = '0123456789'
-  let str = ''
-  for (let i = 0; i < 6; i++) str += chars[Math.floor(Math.random() * chars.length)]
-  let num = ''
-  for (let i = 0; i < 6; i++) num += nums[Math.floor(Math.random() * nums.length)]
-  return `${prefix}-${str}${num}`
-}
 
 const keyGroups = [
   { label: 'FBX', value: 'FBX' },
@@ -29,23 +22,12 @@ const keyTypeOptions = [
   { value: '1key', label: '1 key/1 tài khoản' },
 ]
 
-const mockKeys = Array.from({ length: 8 }, (_, i) => ({
-  id: i + 1,
-  code: randomKey(keyGroups[i % 4].value),
-  group: keyGroups[i % 4].value,
-  status: i % 3 === 0 ? 'chờ' : i % 3 === 1 ? 'đang hoạt động' : 'hết hạn',
-  days: i % 4 === 0 ? 30 : i % 4 === 1 ? 5 : 2,
-  customer: '',
-  selected: false,
-  accountCount: 1,
-  type: '3key',
-}))
-
 const CreateKey = () => {
   const { message: messageApi } = App.useApp()
   const { settings } = useSettings()
-  const [keys, setKeys] = useState(mockKeys)
   const [activeGroup, setActiveGroup] = useState('FBX')
+  const { keys, createKeys, deleteKey, setKeys, fetchKeys } = useKeys(activeGroup)
+  const [allKeys, setAllKeys] = useState([]) // Store all keys for filtering
   const [days, setDays] = useState(30)
   const [customDays, setCustomDays] = useState('')
   const [type, setType] = useState('2key')
@@ -63,78 +45,131 @@ const CreateKey = () => {
   const [selectAllForDelete, setSelectAllForDelete] = useState(false)
   const [form] = Form.useForm()
 
+  // Fetch all keys for filtering purpose
+  const fetchAllKeys = async () => {
+    try {
+      const allKeysData = []
+      for (const group of keyGroups) {
+        const response = await keysAPI.getKeys(group.value)
+        if (response.success && response.data && Array.isArray(response.data.keys)) {
+          allKeysData.push(...response.data.keys)
+        }
+      }
+      setAllKeys(allKeysData)
+    } catch (error) {
+      console.error('Error fetching all keys:', error)
+    }
+  }
+
+  // Load all keys when component mounts
+  useEffect(() => {
+    fetchAllKeys()
+  }, [])
+
+  // Refresh keys when the component becomes visible (e.g., when user switches tabs)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        fetchAllKeys()
+        fetchKeys(activeGroup)
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [activeGroup, fetchKeys])
+
+  // Manual refresh function
+  const handleRefresh = async () => {
+    try {
+      await fetchAllKeys()
+      await fetchKeys(activeGroup)
+      messageApi.success('Đã cập nhật danh sách key!')
+    } catch (error) {
+      messageApi.error('Lỗi cập nhật: ' + (error.message || error))
+    }
+  }
+
   // Tạo key mới
-  const handleCreate = () => {
-    const n = Math.max(1, parseInt(amount) || 1)
-    const prefix = activeGroup
-    const time = activeGroup === 'TEST' ? 2 : (customDays ? parseInt(customDays) : days)
-    const newKeys = Array.from({ length: n }, () => ({
-      id: Date.now() + Math.random(),
-      code: randomKey(prefix),
-      group: prefix,
-      status: 'chờ',
-      days: time,
-      customer,
-      selected: false,
-      accountCount,
-      type,
-    }))
-    setKeys([...newKeys, ...keys])
-    messageApi.success(`Đã tạo ${n} key mới cho nhóm ${prefix}!`)
-    console.log('Thông báo tạo key được gọi') // Debug log
-    setIsModalOpen(false)
-    // Reset form
-    setDays(30)
-    setCustomDays('')
-    setType('2key')
-    setAccountCount(1)
-    setAmount(1)
-    setCustomer('')
-    form.resetFields()
+  const handleCreate = async () => {
+    try {
+      const n = Math.max(1, parseInt(amount) || 1)
+      const time = activeGroup === 'TEST' ? 2 : (customDays ? parseInt(customDays) : days)
+      
+      const keyData = {
+        group: activeGroup,
+        count: n,
+        days: time,
+        type,
+        accountCount,
+        customer: customer || '',
+      }
+      
+      await createKeys(keyData)
+      await fetchKeys(activeGroup)
+      await fetchAllKeys()
+      messageApi.success(`Đã tạo ${n} key mới cho nhóm ${activeGroup}!`)
+      setIsModalOpen(false)
+      
+      // Reset form
+      setDays(30)
+      setCustomDays('')
+      setType('2key')
+      setAccountCount(1)
+      setAmount(1)
+      setCustomer('')
+      form.resetFields()
+    } catch (error) {
+      messageApi.error(`Lỗi tạo key: ${error.message}`)
+    }
   }
 
   // Tạo key và xuất file txt
-  const handleCreateAndExport = () => {
-    const n = Math.max(1, parseInt(amount) || 1)
-    const prefix = activeGroup
-    const time = activeGroup === 'TEST' ? 2 : (customDays ? parseInt(customDays) : days)
-    const newKeys = Array.from({ length: n }, () => ({
-      id: Date.now() + Math.random(),
-      code: randomKey(prefix),
-      group: prefix,
-      status: 'chờ',
-      days: time,
-      customer,
-      selected: false,
-      accountCount,
-      type,
-    }))
-    
-    // Thêm key vào danh sách
-    setKeys([...newKeys, ...keys])
-    
-    // Xuất file txt
-    const fileName = `${prefix}${customDays || time}ngay.txt`
-    const linkTemplate = settings.keyExport?.linkTemplate || 'link nhập key:'
-    const content = newKeys.map(k => `${k.code} | ${linkTemplate}`).join('\n')
-    const blob = new Blob([content], { type: 'text/plain' })
-    const link = document.createElement('a')
-    link.href = URL.createObjectURL(blob)
-    link.download = fileName
-    link.click()
-    
-    messageApi.success(`Đã tạo ${n} key mới và xuất file ${fileName}!`)
-    console.log('Thông báo tạo key và xuất file được gọi') // Debug log
-    setIsModalOpen(false)
-    
-    // Reset form
-    setDays(30)
-    setCustomDays('')
-    setType('2key')
-    setAccountCount(1)
-    setAmount(1)
-    setCustomer('')
-    form.resetFields()
+  const handleCreateAndExport = async () => {
+    try {
+      const n = Math.max(1, parseInt(amount) || 1)
+      const time = activeGroup === 'TEST' ? 2 : (customDays ? parseInt(customDays) : days)
+      
+      const keyData = {
+        group: activeGroup,
+        count: n,
+        days: time,
+        type,
+        accountCount,
+        customer: customer || '',
+      }
+      
+      const response = await createKeys(keyData)
+      await fetchKeys(activeGroup)
+      await fetchAllKeys()
+      
+      // Xuất file txt với keys mới được tạo
+      const newKeys = response.data || []
+      const fileName = `${activeGroup}${customDays || time}ngay.txt`
+      const linkTemplate = settings.keyExport?.linkTemplate || 'link nhập key:'
+      const content = newKeys.map(k => `${k.code} | ${linkTemplate}`).join('\n')
+      const blob = new Blob([content], { type: 'text/plain' })
+      const link = document.createElement('a')
+      link.href = URL.createObjectURL(blob)
+      link.download = fileName
+      link.click()
+      
+      messageApi.success(`Đã tạo ${n} key mới và xuất file ${fileName}!`)
+      setIsModalOpen(false)
+      
+      // Reset form
+      setDays(30)
+      setCustomDays('')
+      setType('2key')
+      setAccountCount(1)
+      setAmount(1)
+      setCustomer('')
+      form.resetFields()
+    } catch (error) {
+      messageApi.error(`Lỗi tạo key: ${error.message}`)
+    }
   }
 
   // Mở modal tạo key
@@ -173,17 +208,37 @@ const CreateKey = () => {
   }
 
   // Xóa key theo bộ lọc
-  const handleFilterDelete = () => {
-    // Xóa các key được chọn hoặc tất cả key được lọc
-    const keysToDelete = selectedKeysForDelete.length > 0 ? selectedKeysForDelete : filteredKeysForDelete
-    const deletedCount = keysToDelete.length
-    const remainingKeys = keys.filter(k => !keysToDelete.some(d => d.id === k.id))
-    setKeys(remainingKeys)
-    
-    messageApi.success(`Đã xóa ${deletedCount} key!`)
-    console.log('Thông báo xóa key được gọi:', deletedCount) // Debug log
-    setIsFilterModalOpen(false)
-    setSelectedKeyGroup('')
+  const handleFilterDelete = async () => {
+    try {
+      // Xóa các key được chọn hoặc tất cả key được lọc
+      const keysToDelete = selectedKeysForDelete.length > 0 ? selectedKeysForDelete : filteredKeysForDelete
+      const deletedCount = keysToDelete.length
+      
+      // Gọi API để xóa từng key
+      for (const key of keysToDelete) {
+        await deleteKey(key.id)
+      }
+      
+      // Refresh both current group keys and all keys
+      await fetchKeys(activeGroup)
+      await fetchAllKeys()
+      
+      messageApi.success(`Đã xóa ${deletedCount} key!`)
+      setIsFilterModalOpen(false)
+      setSelectedKeyGroup('')
+      setSelectedStatus('')
+      setFilteredKeysForDelete([])
+      setSelectedKeysForDelete([])
+      setSelectAllForDelete(false)
+    } catch (error) {
+      messageApi.error(`Lỗi xóa key: ${error.message}`)
+    }
+  }
+
+  // Lọc key khi thay đổi nhóm key
+  const handleKeyGroupChange = (group) => {
+    const newGroup = selectedKeyGroup === group ? '' : group
+    setSelectedKeyGroup(newGroup)
     setSelectedStatus('')
     setFilteredKeysForDelete([])
     setSelectedKeysForDelete([])
@@ -192,21 +247,22 @@ const CreateKey = () => {
 
   // Lọc key khi thay đổi trạng thái
   const handleStatusChange = (status) => {
-    setSelectedStatus(selectedStatus === status ? '' : status)
+    const newStatus = selectedStatus === status ? '' : status
+    setSelectedStatus(newStatus)
     setSelectedKeysForDelete([])
     setSelectAllForDelete(false)
     
-    if (selectedKeyGroup && status && selectedStatus !== status) {
-      let statusFilter = status
-      if (status === 'hết hạn') {
+    if (selectedKeyGroup && newStatus) {
+      let statusFilter = newStatus
+      if (newStatus === 'hết hạn') {
         statusFilter = 'hết hạn'
-      } else if (status === 'còn hạn') {
+      } else if (newStatus === 'còn hạn') {
         statusFilter = 'đang hoạt động'
-      } else if (status === 'chưa gán tài khoản') {
+      } else if (newStatus === 'chưa gán tài khoản') {
         statusFilter = 'chờ'
       }
       
-      const filtered = keys.filter(k => 
+      const filtered = allKeys.filter(k => 
         k.group === selectedKeyGroup && k.status === statusFilter
       )
       setFilteredKeysForDelete(filtered)
@@ -238,19 +294,21 @@ const CreateKey = () => {
     setSelectAllForDelete(!selectAllForDelete)
   }
 
-  // Chọn/xóa/reset key
+  // Chọn/xóa key
   const handleSelect = id => setKeys(keys.map(k => k.id === id ? { ...k, selected: !k.selected } : k))
   const handleSelectAll = () => {
     setSelectAll(!selectAll)
     setKeys(keys.map(k => k.group === activeGroup ? { ...k, selected: !selectAll } : k))
   }
-  const handleReset = id => {
-    setKeys(keys.map(k => k.id === id ? { ...k, status: 'chờ' } : k))
-    messageApi.success('Đã reset key thành công!')
-  }
-  const handleDeleteAccount = id => {
-    setKeys(keys.map(k => k.id === id ? { ...k, status: 'chờ' } : k))
-    messageApi.success('Đã xóa tài khoản thành công!')
+  const handleDeleteAccount = async id => {
+    try {
+      await deleteKey(id);
+      await fetchKeys(activeGroup);
+      await fetchAllKeys();
+      messageApi.success('Đã xóa key thành công!');
+    } catch (error) {
+      messageApi.error('Lỗi xóa key: ' + (error.message || error));
+    }
   }
 
   // Xuất TXT
@@ -272,13 +330,23 @@ const CreateKey = () => {
     messageApi.success(`Đã xuất ${selectedKeys.length} key vào file ${fileName}!`)
   }
 
+  // Map lại dữ liệu key để khớp với các cột bảng
+  const mappedKeys = keys.map(k => ({
+    ...k,
+    group: k.group || k.group_code,
+    days: k.days_valid || k.days || k.days_remaining,
+    accountCount: k.account_count,
+    customer: k.customer_name || k.customer
+  }));
+
   // Tìm kiếm
-  const filteredKeys = keys.filter(k => {
-    if (k.group !== activeGroup) return false
-    if (search === '') return true
-    if (['FBX', 'THX', 'CTV', 'TEST'].includes(search.toUpperCase())) return k.group === search.toUpperCase()
-    if (search === 'it') return k.days <= 3
-    return k.code.toLowerCase().includes(search.toLowerCase())
+  const filteredKeys = mappedKeys.filter(k => {
+    const groupValue = k.group;
+    if (groupValue !== activeGroup) return false;
+    if (search === '') return true;
+    if (['FBX', 'THX', 'CTV', 'TEST'].includes(search.toUpperCase())) return groupValue === search.toUpperCase();
+    if (search === 'it') return k.days <= 3;
+    return k.code.toLowerCase().includes(search.toLowerCase());
   })
 
   // Table columns
@@ -296,8 +364,9 @@ const CreateKey = () => {
     {
       title: 'Thao tác', key: 'actions', render: (_, record) => (
         <Space>
-          <Button icon={<SyncOutlined />} size="small" onClick={() => handleReset(record.id)} title="Reset" />
-          <Button icon={<DeleteOutlined />} size="small" danger onClick={() => handleDeleteAccount(record.id)} title="Xóa tài khoản" />
+          <Popconfirm title="Xóa key này?" onConfirm={() => handleDeleteAccount(record.id)} okText="Xóa" cancelText="Hủy">
+            <Button icon={<DeleteOutlined />} size="small" danger title="Xóa key" />
+          </Popconfirm>
         </Space>
       )
     }
@@ -323,6 +392,7 @@ const CreateKey = () => {
                 </Button>
                 <Button icon={<FileTextOutlined />} onClick={handleExport} className="w-full md:w-auto">Xuất TXT</Button>
                 <Button icon={<DeleteOutlined />} danger onClick={showFilterModal} className="w-full md:w-auto">Xóa key</Button>
+                <Button icon={<ReloadOutlined />} onClick={handleRefresh} className="w-full md:w-auto">Làm mới</Button>
               </div>
               <Divider />
               <div className="flex flex-col md:flex-row gap-2 md:gap-4 mb-4 w-full">
@@ -459,7 +529,7 @@ const CreateKey = () => {
                 <Button
                   key={group.value}
                   type={selectedKeyGroup === group.value ? 'primary' : 'default'}
-                  onClick={() => setSelectedKeyGroup(selectedKeyGroup === group.value ? '' : group.value)}
+                  onClick={() => handleKeyGroupChange(group.value)}
                   className="h-10"
                 >
                   {group.label}

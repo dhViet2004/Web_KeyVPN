@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Form, Input, Button, Card, message } from 'antd'
 import { UserOutlined, LockOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
+import { authAPI } from '../services/api'
 
 const AdminLogin = () => {
   const [loading, setLoading] = useState(false)
@@ -10,21 +11,27 @@ const AdminLogin = () => {
   const onFinish = async (values) => {
     setLoading(true)
     
-    // Giả lập xác thực admin (có thể thay thế bằng API thực)
-    if (values.username === 'admin' && values.password === 'admin123') {
-      message.success('Đăng nhập thành công!')
+    try {
+      const response = await authAPI.login(values.username, values.password)
       
-      // Lưu trạng thái đăng nhập
-      localStorage.setItem('isAdmin', 'true')
-      localStorage.setItem('adminUsername', values.username)
-      
-      // Trigger re-render NavBar
-      window.dispatchEvent(new Event('admin-status-changed'))
-      
-      // Chuyển hướng đến dashboard
-      navigate('/dashboard')
-    } else {
-      message.error('Tên đăng nhập hoặc mật khẩu không đúng!')
+      if (response.success) {
+        message.success('Đăng nhập thành công!')
+        
+        // Lưu trạng thái đăng nhập
+        localStorage.setItem('isAdmin', 'true')
+        localStorage.setItem('adminUsername', values.username)
+        
+        // Trigger re-render NavBar
+        window.dispatchEvent(new Event('admin-status-changed'))
+        
+        // Chuyển hướng đến dashboard
+        navigate('/dashboard')
+      } else {
+        message.error(response.message || 'Đăng nhập thất bại!')
+      }
+    } catch (error) {
+      console.error('Login error:', error)
+      message.error(error.message || 'Lỗi kết nối server!')
     }
     
     setLoading(false)
@@ -93,7 +100,7 @@ const AdminLogin = () => {
           
           <div className="text-center mt-4 p-4 bg-blue-50 rounded-lg">
             <p className="text-sm text-blue-700">
-              <strong>Demo:</strong> admin / admin123
+              <strong>Lưu ý:</strong> Vui lòng đảm bảo server backend đang chạy trên port 5001
             </p>
           </div>
         </Card>
