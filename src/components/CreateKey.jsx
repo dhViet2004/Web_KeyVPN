@@ -31,7 +31,6 @@ const CreateKey = () => {
   const [days, setDays] = useState(30)
   const [customDays, setCustomDays] = useState('')
   const [type, setType] = useState('2key')
-  const [accountCount, setAccountCount] = useState(1)
   const [amount, setAmount] = useState(1)
   const [customer, setCustomer] = useState('')
   const [search, setSearch] = useState('')
@@ -51,6 +50,8 @@ const CreateKey = () => {
   const [accounts, setAccounts] = useState([])
   const [loadingAccounts, setLoadingAccounts] = useState(false)
   const [selectedAccountId, setSelectedAccountId] = useState(null)
+  const [justAssignedKey, setJustAssignedKey] = useState(false) // Track if key was just assigned
+  const [tableKey, setTableKey] = useState(0) // Force table re-render
 
   // States for transfer key modal
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false)
@@ -64,14 +65,30 @@ const CreateKey = () => {
     try {
       const allKeysData = []
       for (const group of keyGroups) {
+        console.log(`🔍 Fetching keys for group: ${group.value}`)
         const response = await keysAPI.getKeys(group.value)
-        if (response.success && response.data && Array.isArray(response.data.keys)) {
-          allKeysData.push(...response.data.keys)
+        console.log(`📊 Response for ${group.value}:`, response)
+        
+        if (response.success && response.data) {
+          // Check if response.data has keys array
+          if (Array.isArray(response.data.keys)) {
+            console.log(`✅ Found ${response.data.keys.length} keys for ${group.value}`)
+            allKeysData.push(...response.data.keys)
+          } else if (Array.isArray(response.data)) {
+            // Sometimes data might be directly an array
+            console.log(`✅ Found ${response.data.length} keys for ${group.value} (direct array)`)
+            allKeysData.push(...response.data)
+          } else {
+            console.log(`⚠️ Unexpected data structure for ${group.value}:`, response.data)
+          }
+        } else {
+          console.log(`⚠️ No keys found for ${group.value}:`, response)
         }
       }
+      console.log(`🎯 Total keys fetched: ${allKeysData.length}`)
       setAllKeys(allKeysData)
     } catch (error) {
-      console.error('Error fetching all keys:', error)
+      console.error('❌ Error fetching all keys:', error)
     }
   }
 
@@ -117,7 +134,6 @@ const CreateKey = () => {
         count: n,
         days: time,
         type,
-        accountCount,
         customer: customer || '',
       }
       
@@ -131,7 +147,6 @@ const CreateKey = () => {
       setDays(30)
       setCustomDays('')
       setType('2key')
-      setAccountCount(1)
       setAmount(1)
       setCustomer('')
       form.resetFields()
@@ -151,7 +166,6 @@ const CreateKey = () => {
         count: n,
         days: time,
         type,
-        accountCount,
         customer: customer || '',
       }
       
@@ -177,7 +191,6 @@ const CreateKey = () => {
       setDays(30)
       setCustomDays('')
       setType('2key')
-      setAccountCount(1)
       setAmount(1)
       setCustomer('')
       form.resetFields()
@@ -193,7 +206,6 @@ const CreateKey = () => {
       days: activeGroup === 'TEST' ? 2 : days,
       customDays,
       type,
-      accountCount,
       amount,
       customer
     })
@@ -336,7 +348,11 @@ const CreateKey = () => {
     setCurrentKeyForAssign(key)
     setIsAssignModalOpen(true)
     setSelectedAccountId(null)
-    await fetchAccountsWithSlots()
+    setJustAssignedKey(false) // Reset success state when opening modal for new key
+    
+    // Always fetch fresh data to ensure accurate key counts
+    // Không sử dụng cached data từ database query để đảm bảo số liệu chính xác
+    await fetchAccountsWithSlots();
   }
 
   const handleAssignCancel = () => {
@@ -344,6 +360,8 @@ const CreateKey = () => {
     setCurrentKeyForAssign(null)
     setSelectedAccountId(null)
     setAccounts([])
+    setJustAssignedKey(false) // Reset assign success state
+    setTableKey(0) // Reset table key
   }
 
   const fetchAccountsWithSlots = async () => {
@@ -351,12 +369,132 @@ const CreateKey = () => {
       setLoadingAccounts(true)
       const response = await accountsAPI.getAccounts()
       if (response.success && response.data && Array.isArray(response.data.accounts)) {
-        // Filter accounts that have available slots (less than max keys)
+        console.log('🔍 Raw accounts data from API:', response.data.accounts.slice(0, 2)) // Debug log
+        
+        // Filter accounts based on key type and dynamic slot limits
+        const keyType = currentKeyForAssign?.key_type || currentKeyForAssign?.type || '2key';
+        
         const accountsWithSlots = response.data.accounts.filter(account => {
-          const currentKeys = account.key_count || 0
-          const maxKeys = account.max_keys || 3 // Default max keys
-          return currentKeys < maxKeys
-        })
+          // Map backend field names to frontend expected names
+          const currentKeys = account.key_count || account.current_key_count || 0; // Backend uses 'key_count'
+          const currentMaxSlots = account.max_key_slots || account.max_keys || 3; // Backend might use 'max_keys'
+          
+          console.log(`🔍 Account ${account.username}: key_count=${account.key_count}, current_key_count=${account.current_key_count}, max_keys=${account.max_keys}, dominant_key_type=${account.dominant_key_type}`)
+          
+          // Check key type restrictions first
+          let isCompatible = true;
+          if (account.key_type_restrictions && account.key_type_restrictions !== '') {
+            isCompatible = account.key_type_restrictions === keyType;
+          }
+          
+          if (!isCompatible) {
+            console.log(`❌ Account ${account.username} not compatible with ${keyType} (restricted to ${account.key_type_restrictions})`);
+            return false;
+          }
+          
+          // Apply specific filtering logic based on key type
+          if (keyType === '1key') {
+            // 1key/tài khoản: Chỉ hiển thị tài khoản trống (0/3 slot)
+            const isEmpty = currentKeys === 0;
+            if (!isEmpty) {
+              console.log(`❌ Account ${account.username} has ${currentKeys} keys, not suitable for 1key (needs empty account)`);
+            }
+            return isEmpty;
+            
+          } else if (keyType === '2key') {
+            // 2key/tài khoản: Hiển thị tài khoản trống (0/3) hoặc đã có 1 key loại 2key
+            const isEmpty = currentKeys === 0;
+            const hasOne2Key = currentKeys === 1 && (account.dominant_key_type === '2key' || currentMaxSlots === 2);
+            
+            if (!isEmpty && !hasOne2Key) {
+              console.log(`❌ Account ${account.username} has ${currentKeys} keys (type: ${account.dominant_key_type}), not suitable for 2key`);
+            }
+            return isEmpty || hasOne2Key;
+            
+          } else if (keyType === '3key') {
+            // 3key/tài khoản: Hiển thị tài khoản có thể nhận thêm key loại 3key (0/3, 1/3, 2/3)
+            const projectedMaxSlots = 3; // 3key luôn có slot = 3
+            const hasSlots = currentKeys < projectedMaxSlots;
+            
+            if (!hasSlots) {
+              console.log(`❌ Account ${account.username} has ${currentKeys}/3 keys, no slots available for 3key`);
+            }
+            return hasSlots;
+            
+          } else {
+            // Default fallback for unknown key types
+            console.log(`⚠️ Unknown key type: ${keyType}, using default logic`);
+            const projectedMaxSlots = 3;
+            return currentKeys < projectedMaxSlots;
+          }
+        }).map(account => ({
+          ...account,
+          // Normalize field names from backend to frontend expected names
+          current_key_count: account.key_count || account.current_key_count || 0,
+          max_key_slots: account.max_keys || account.max_key_slots || 3,
+          
+          // Add computed fields for display with projected slots
+          projected_max_slots: (() => {
+            // Calculate projected max slots based on key type being assigned
+            if (keyType === '1key') return 1;
+            else if (keyType === '2key') return 2; 
+            else if (keyType === '3key') return 3;
+            return account.max_keys || account.max_key_slots || 3;
+          })(),
+          available_slots: (() => {
+            const currentKeys = account.key_count || account.current_key_count || 0;
+            
+            // Calculate available slots based on current account state and key type
+            if (keyType === '1key') {
+              // 1key: Account should be empty, so available = 1 - currentKeys
+              return Math.max(0, 1 - currentKeys);
+            } else if (keyType === '2key') {
+              // 2key: Check if account is empty or has 1x2key already
+              const dominantKeyType = account.dominant_key_type;
+              if (currentKeys === 0) {
+                // Empty account, can accept 2 keys of 2key type
+                return 2;
+              } else if (currentKeys === 1 && dominantKeyType === '2key') {
+                // Already has 1x2key, can accept 1 more
+                return 1;
+              } else {
+                // Other cases shouldn't appear due to filtering, but handle gracefully
+                return 0;
+              }
+            } else if (keyType === '3key') {
+              // 3key: Always projected to 3 slots
+              return Math.max(0, 3 - currentKeys);
+            } else {
+              // Default fallback
+              const projectedMax = account.max_keys || account.max_key_slots || 3;
+              return Math.max(0, projectedMax - currentKeys);
+            }
+          })(),
+          can_accept_key_type: true // Already filtered for compatibility
+        }))
+        
+        console.log(`🔍 Filtered accounts for ${keyType} key:`, {
+          total: response.data.accounts.length,
+          available: accountsWithSlots.length,
+          keyType,
+          filterLogic: {
+            '1key': 'Only empty accounts (0/3 slots)',
+            '2key': 'Empty accounts (0/3) or accounts with 1x2key (1/2 slots)', 
+            '3key': 'Accounts with available slots for 3key (0/3, 1/3, 2/3)'
+          }[keyType] || 'Default logic',
+          accountsDetails: accountsWithSlots.map(acc => ({
+            id: acc.id,
+            username: acc.username,
+            original_key_count: acc.key_count, // From backend
+            original_max_keys: acc.max_keys, // From backend
+            dominant_key_type: acc.dominant_key_type, // From backend
+            normalized_current_key_count: acc.current_key_count, // Normalized
+            normalized_max_key_slots: acc.max_key_slots, // Normalized
+            projected_max_slots: acc.projected_max_slots,
+            available_slots: acc.available_slots
+          }))
+        });
+        
         setAccounts(accountsWithSlots)
       } else {
         setAccounts([])
@@ -379,11 +517,115 @@ const CreateKey = () => {
     try {
       const response = await accountsAPI.assignKey(selectedAccountId, currentKeyForAssign.id)
       
+      console.log('🎉 Assign key response:', response);
+      
       if (response.success) {
-        await fetchKeys(activeGroup)
-        await fetchAllKeys()
-        messageApi.success(`Đã gán key ${currentKeyForAssign.code} vào tài khoản thành công!`)
-        handleAssignCancel()
+        // Check if backend provided updated account info
+        if (response.data && response.data.updatedAccount) {
+          console.log('📊 Using backend updated account data:', response.data.updatedAccount);
+          
+          // Update accounts state with accurate backend data
+          const updatedAccounts = accounts.map(account => {
+            if (account.id === selectedAccountId) {
+              const backendAccount = response.data.updatedAccount;
+              const keyType = currentKeyForAssign?.key_type || currentKeyForAssign?.type || '2key';
+              const projectedMax = keyType === '1key' ? 1 : keyType === '2key' ? 2 : keyType === '3key' ? 3 : (backendAccount.max_key_slots || 3);
+              
+              return {
+                ...account,
+                // Use backend provided values
+                current_key_count: backendAccount.current_key_count,
+                key_count: backendAccount.current_key_count, // Dual field for compatibility
+                max_key_slots: backendAccount.max_key_slots,
+                max_keys: backendAccount.max_key_slots, // Dual field for compatibility
+                assigned_keys: backendAccount.assigned_keys,
+                projected_max_slots: projectedMax,
+                available_slots: Math.max(0, projectedMax - backendAccount.current_key_count)
+              }
+            }
+            return account
+          });
+          
+          setAccounts([...updatedAccounts]);
+          console.log(`✅ Updated account ${selectedAccountId} with backend data:`, {
+            current_key_count: response.data.updatedAccount.current_key_count,
+            max_key_slots: response.data.updatedAccount.max_key_slots,
+            assigned_keys: response.data.updatedAccount.assigned_keys
+          });
+        } else {
+          console.log('⚠️ No updated account data from backend, using fallback calculation');
+          
+          // Fallback: Cập nhật local state như trước
+          const updatedAccounts = accounts.map(account => {
+            if (account.id === selectedAccountId) {
+              // Use normalized field names
+              const currentKeys = account.current_key_count || account.key_count || 0;
+              const newKeyCount = currentKeys + 1;
+              const keyType = currentKeyForAssign?.key_type || currentKeyForAssign?.type || '2key';
+              const projectedMax = keyType === '1key' ? 1 : keyType === '2key' ? 2 : keyType === '3key' ? 3 : (account.max_key_slots || account.max_keys || 3);
+              
+              console.log(`🎯 Fallback update for account ${selectedAccountId}: currentKeys=${currentKeys} -> newKeyCount=${newKeyCount}, projectedMax=${projectedMax}`);
+              
+              return {
+                ...account,
+                current_key_count: newKeyCount,
+                key_count: newKeyCount, // Update both field names for compatibility
+                projected_max_slots: projectedMax,
+                available_slots: Math.max(0, projectedMax - newKeyCount)
+              }
+            }
+            return account
+          })
+          
+          setAccounts([...updatedAccounts]);
+        }
+        
+        // Force update state và table re-render để trigger UI update
+        setTableKey(prev => prev + 1) // Force table re-render
+        
+        // Debug log để kiểm tra state update
+        const currentAccount = accounts.find(acc => acc.id === selectedAccountId);
+        console.log(`🎯 Account ${selectedAccountId} update completed:`, {
+          oldCount: (currentAccount?.current_key_count || currentAccount?.key_count || 0),
+          keyType: currentKeyForAssign?.key_type || currentKeyForAssign?.type || '2key',
+          response: response.data
+        })
+        
+        // Hiển thị message thành công với thông tin slot change
+        let successMessage = `Đã gán key ${currentKeyForAssign.code} vào tài khoản thành công!`;
+        if (response.data && response.data.slotChangeMessage) {
+          successMessage += ` ${response.data.slotChangeMessage}`;
+        }
+        messageApi.success(successMessage)
+        
+        // Đánh dấu là vừa gán key thành công
+        setJustAssignedKey(true)
+        
+        // Reset selected account để user có thể chọn tài khoản khác
+        setSelectedAccountId(null)
+        
+        // Đợi một chút để database cập nhật, nhưng không cần quá lâu vì UI đã được cập nhật
+        setTimeout(async () => {
+          try {
+            // Fetch lại dữ liệu từ server để đảm bảo đồng bộ với backend
+            await fetchKeys(activeGroup)
+            await fetchAllKeys()
+            
+            // Optionally refresh accounts list để có dữ liệu chính xác nhất từ server
+            // Nhưng không làm gián đoạn UX vì local state đã được cập nhật
+            await fetchAccountsWithSlots()
+            
+            // Force re-render sau khi refresh từ server
+            setTableKey(prev => prev + 1)
+            
+            console.log('🔄 Background refresh completed')
+          } catch (error) {
+            console.error('Background refresh error:', error)
+          }
+        }, 1000)
+        
+        // Không đóng modal để user có thể thấy thay đổi và tiếp tục gán key khác nếu muốn
+        // handleAssignCancel()
       } else {
         // Xử lý các lỗi cụ thể từ server
         const errorMessage = response.message || 'Lỗi không xác định'
@@ -439,12 +681,38 @@ const CreateKey = () => {
       setLoadingTransferAccounts(true)
       const response = await accountsAPI.getAccounts()
       if (response.success && response.data && Array.isArray(response.data.accounts)) {
-        // Filter accounts that have available slots (less than max keys)
+        // Filter accounts based on key type and dynamic slot limits
+        const keyType = currentKeyForTransfer?.key_type || currentKeyForTransfer?.type || '2key';
+        
         const accountsWithSlots = response.data.accounts.filter(account => {
-          const currentKeys = account.key_count || 0
-          const maxKeys = account.max_keys || 3 // Default max keys
-          return currentKeys < maxKeys
+          const currentKeys = account.current_key_count || 0
+          const currentMaxSlots = account.max_key_slots || 3
+          
+          // Calculate what max slots would be after transferring this key type
+          let projectedMaxSlots = currentMaxSlots;
+          if (keyType === '1key') projectedMaxSlots = 1;
+          else if (keyType === '2key') projectedMaxSlots = 2;
+          else if (keyType === '3key') projectedMaxSlots = 3;
+          
+          // Check if account has available slots after the potential slot change
+          const wouldHaveSlots = currentKeys < projectedMaxSlots;
+          
+          // If account has key type restrictions, check compatibility
+          if (account.key_type_restrictions) {
+            const isCompatible = account.key_type_restrictions === keyType;
+            return wouldHaveSlots && isCompatible;
+          }
+          
+          // For accounts without restrictions, they can accept any key type
+          return wouldHaveSlots;
         })
+        
+        console.log(`🔄 Filtered accounts for transfer ${keyType} key:`, {
+          total: response.data.accounts.length,
+          available: accountsWithSlots.length,
+          keyType
+        });
+        
         setTransferAccounts(accountsWithSlots)
       } else {
         setTransferAccounts([])
@@ -608,10 +876,15 @@ const CreateKey = () => {
   // Map lại dữ liệu key để khớp với các cột bảng
   const mappedKeys = keys.map(k => ({
     ...k,
-    group: k.group || k.group_code,
-    days: k.days_valid || k.days || k.days_remaining,
-    accountCount: k.account_count,
-    customer: k.customer_name || k.customer
+    group: k.group_code || k.group || activeGroup, // Fallback to activeGroup if no group info
+    days: k.days_remaining || k.days_valid || k.days || 0,
+    accountCount: k.assigned_accounts ? 
+      (typeof k.assigned_accounts === 'string' ? 
+        JSON.parse(k.assigned_accounts).length : 
+        k.assigned_accounts.length) : 
+      (k.current_assignments || 0), // Use current_assignments from query or fallback to 0
+    maxKeysPerAccount: k.max_keys_per_account || 2, // New field for display
+    customer: k.customer_name || k.customer || '' // Fallback to empty string
   }));
 
   // Tìm kiếm
@@ -634,7 +907,60 @@ const CreateKey = () => {
     { title: 'Nhóm', dataIndex: 'group', key: 'group' },
     { title: 'Trạng thái', dataIndex: 'status', key: 'status' },
     { title: 'Ngày', dataIndex: 'days', key: 'days' },
-    { title: 'Số tài khoản', dataIndex: 'accountCount', key: 'accountCount' },
+    { 
+      title: 'Danh sách tài khoản', 
+      dataIndex: 'account_details', 
+      key: 'account_details',
+      width: 200,
+      render: (account_details, record) => {
+        try {
+          let accounts = [];
+          
+          // First try to use account_details from the new query
+          if (account_details && typeof account_details === 'string') {
+            accounts = JSON.parse(account_details);
+          } else if (Array.isArray(account_details)) {
+            accounts = account_details;
+          } else if (record.assigned_accounts) {
+            // Fallback to assigned_accounts if account_details is not available
+            if (typeof record.assigned_accounts === 'string') {
+              const assignedIds = JSON.parse(record.assigned_accounts || '[]');
+              accounts = assignedIds.map(id => ({ account_id: id, username: `ID: ${id}` }));
+            } else if (Array.isArray(record.assigned_accounts)) {
+              accounts = record.assigned_accounts.map(id => ({ account_id: id, username: `ID: ${id}` }));
+            }
+          }
+          
+          if (accounts.length === 0) {
+            return <span className="text-gray-400 italic">Chưa gán</span>;
+          }
+          
+          // Display account usernames (simplified version)
+          return (
+            <div className="flex flex-wrap gap-1">
+              {accounts.map((account, index) => (
+                <span 
+                  key={index}
+                  className={`px-2 py-1 rounded text-xs ${
+                    account.status === 'active' 
+                      ? 'bg-green-100 text-green-700' 
+                      : account.status === 'suspended'
+                      ? 'bg-red-100 text-red-700'
+                      : 'bg-blue-100 text-blue-700'
+                  }`}
+                  title={`ID: ${account.account_id} | Trạng thái: ${account.status || 'unknown'}`}
+                >
+                  {account.username || `ID: ${account.account_id || account}`}
+                </span>
+              ))}
+            </div>
+          );
+        } catch (error) {
+          console.error('Error parsing account_details:', error);
+          return <span className="text-red-400 italic">Lỗi dữ liệu</span>;
+        }
+      }
+    },
     { title: 'Khách hàng', dataIndex: 'customer', key: 'customer' },
     {
       title: 'Thao tác', key: 'actions', render: (_, record) => (
@@ -707,10 +1033,10 @@ const CreateKey = () => {
                   dataSource={filteredKeys}
                   rowKey="id"
                   pagination={{ pageSize: 8 }}
-                  scroll={{ x: true }}
+                  scroll={{ x: 1000 }}
                   bordered
                   size="middle"
-                  style={{ borderRadius: 12, minWidth: 600 }}
+                  style={{ borderRadius: 12, minWidth: 800 }}
                 />
               </div>
             </>
@@ -765,19 +1091,9 @@ const CreateKey = () => {
             </Form.Item>
             
             <Form.Item label="Loại key" className="mb-0">
-              <Space wrap>
-                <Select value={type} onChange={v => setType(v)} style={{ width: 160 }}>
-                  {keyTypeOptions.map(opt => <Option key={opt.value} value={opt.value}>{opt.label}</Option>)}
-                </Select>
-                <span className="text-sm text-gray-500">Số tài khoản:</span>
-                <Input 
-                  type="number" 
-                  min={1} 
-                  style={{ width: 60 }} 
-                  value={accountCount} 
-                  onChange={e => setAccountCount(Number(e.target.value))} 
-                />
-              </Space>
+              <Select value={type} onChange={v => setType(v)} style={{ width: 160 }}>
+                {keyTypeOptions.map(opt => <Option key={opt.value} value={opt.value}>{opt.label}</Option>)}
+              </Select>
             </Form.Item>
             
             <Form.Item label="Số lượng key" className="mb-0">
@@ -1025,6 +1341,11 @@ const CreateKey = () => {
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div><span className="font-medium">Mã key:</span> <span className="font-mono font-bold">{currentKeyForAssign.code}</span></div>
                 <div><span className="font-medium">Nhóm:</span> {currentKeyForAssign.group}</div>
+                <div><span className="font-medium">Loại key:</span> 
+                  <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs font-medium">
+                    {currentKeyForAssign.key_type || currentKeyForAssign.type || '2key'}
+                  </span>
+                </div>
                 <div>
                   <span className="font-medium">Trạng thái:</span> 
                   <span className={`ml-2 px-2 py-1 rounded text-xs ${
@@ -1037,8 +1358,32 @@ const CreateKey = () => {
                   </span>
                 </div>
                 <div><span className="font-medium">Số ngày:</span> {currentKeyForAssign.days}</div>
-                <div><span className="font-medium">Loại key:</span> {currentKeyForAssign.accountCount} tài khoản/key</div>
                 <div><span className="font-medium">Khách hàng:</span> {currentKeyForAssign.customer || 'Không có'}</div>
+              </div>
+              
+              {/* Thông báo về ảnh hưởng slot */}
+              <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded">
+                <p className="text-sm text-blue-700">
+                  <strong>💡 Lưu ý:</strong> Key loại <strong>{currentKeyForAssign.key_type || currentKeyForAssign.type || '2key'}</strong> sẽ thay đổi slot tài khoản:
+                  {(currentKeyForAssign.key_type || currentKeyForAssign.type) === '1key' && (
+                    <>
+                      <br />• Tài khoản sẽ được giới hạn <strong>tối đa 1 slot key</strong>
+                      <br />• Nếu tài khoản đã có key khác, key cũ sẽ bị gỡ bỏ
+                    </>
+                  )}
+                  {(currentKeyForAssign.key_type || currentKeyForAssign.type) === '2key' && (
+                    <>
+                      <br />• Tài khoản sẽ được giới hạn <strong>tối đa 2 slot key</strong>
+                      <br />• Hiển thị: số key đã gán / 2 (ví dụ: 1/2 = đã gán 1 key, còn 1 slot trống)
+                    </>
+                  )}
+                  {(currentKeyForAssign.key_type || currentKeyForAssign.type) === '3key' && (
+                    <>
+                      <br />• Tài khoản sẽ giữ nguyên <strong>3 slot key</strong>
+                      <br />• Không có thay đổi về giới hạn slot
+                    </>
+                  )}
+                </p>
               </div>
               
               {currentKeyForAssign.status !== 'chờ' && (
@@ -1046,6 +1391,15 @@ const CreateKey = () => {
                   <p className="text-sm text-yellow-700">
                     <strong>⚠️ Lưu ý:</strong> Key này có trạng thái "{currentKeyForAssign.status}" và có thể không thể gán được. 
                     Chỉ những key có trạng thái "chờ" mới có thể gán vào tài khoản.
+                  </p>
+                </div>
+              )}
+              
+              {justAssignedKey && (
+                <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded">
+                  <p className="text-sm text-green-700">
+                    <strong>✅ Thành công!</strong> Key đã được gán thành công. Danh sách tài khoản bên dưới đã được cập nhật với số lượng key mới nhất.
+                    Bạn có thể tiếp tục gán key khác hoặc đóng modal này.
                   </p>
                 </div>
               )}
@@ -1069,6 +1423,7 @@ const CreateKey = () => {
             ) : (
               <div className="max-h-96 overflow-y-auto">
                 <Table
+                  key={tableKey} // Force re-render when tableKey changes
                   size="small"
                   pagination={false}
                   rowKey="id"
@@ -1090,11 +1445,74 @@ const CreateKey = () => {
                     },
                     {
                       title: 'Slot key',
-                      render: (_, record) => (
-                        <span className="text-sm">
-                          {record.key_count || 0}/{record.max_keys || 3}
-                        </span>
-                      )
+                      render: (_, record) => {
+                        // Use projected slots for the key type being assigned
+                        const projectedMaxSlots = record.projected_max_slots || 3;
+                        const currentKeys = record.current_key_count || 0;
+                        const availableSlots = Math.max(0, projectedMaxSlots - currentKeys);
+                        const keyTypeRestrictions = record.key_type_restrictions;
+                        
+                        return (
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
+                              <span className={`text-sm font-medium ${
+                                availableSlots === 0 ? 'text-red-600 font-bold' :
+                                availableSlots === 1 ? 'text-orange-600' :
+                                'text-green-600'
+                              }`}>
+                                {currentKeys}/{projectedMaxSlots}
+                              </span>
+                              <span className="text-xs text-gray-500">
+                                ({availableSlots} trống)
+                              </span>
+                            </div>
+                            
+                            {/* Show slot change info */}
+                            {projectedMaxSlots !== (record.max_key_slots || 3) && (
+                              <div className="text-xs">
+                                {projectedMaxSlots < (record.max_key_slots || 3) ? (
+                                  <span className="bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded font-medium">
+                                    📉 Slot sẽ thay đổi: {record.max_key_slots || 3} → {projectedMaxSlots}
+                                  </span>
+                                ) : (
+                                  <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">
+                                    📈 Slot sẽ tăng: {record.max_key_slots || 3} → {projectedMaxSlots}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            
+                            {/* Show when slot remains the same */}
+                            {projectedMaxSlots === (record.max_key_slots || 3) && projectedMaxSlots === 3 && (
+                              <div className="text-xs">
+                                <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">
+                                  ✅ Slot giữ nguyên: {projectedMaxSlots}
+                                </span>
+                              </div>
+                            )}
+                            
+                            {keyTypeRestrictions && keyTypeRestrictions !== '' && (
+                              <div className="text-xs">
+                                <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">
+                                  🔒 Chỉ: {keyTypeRestrictions}
+                                </span>
+                              </div>
+                            )}
+                            
+                            {availableSlots === 1 && (
+                              <span className="text-xs text-orange-700 bg-orange-100 px-1.5 py-0.5 rounded font-medium">
+                                ⚠️ Slot cuối cùng
+                              </span>
+                            )}
+                            
+                            {availableSlots === 0 && (
+                              <span className="text-xs text-red-700 bg-red-100 px-1.5 py-0.5 rounded font-medium">
+                                ❌ Đã đầy
+                              </span>
+                            )}
+                          </div>
+                        );
+                      }
                     },
                     {
                       title: 'Trạng thái',
@@ -1133,7 +1551,19 @@ const CreateKey = () => {
 
           <div className="flex gap-3 justify-end pt-4 border-t">
             <Button onClick={handleAssignCancel}>
-              Hủy
+              Đóng
+            </Button>
+            <Button 
+              onClick={async () => {
+                messageApi.info('Đang làm mới danh sách tài khoản...')
+                await fetchAccountsWithSlots()
+                messageApi.success('Đã cập nhật danh sách tài khoản!')
+              }}
+              disabled={loadingAccounts}
+              icon={<ReloadOutlined />}
+              loading={loadingAccounts}
+            >
+              Làm mới danh sách
             </Button>
             <Button 
               type="primary"
@@ -1165,6 +1595,11 @@ const CreateKey = () => {
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div><span className="font-medium">Mã key:</span> <span className="font-mono font-bold">{currentKeyForTransfer.code}</span></div>
                 <div><span className="font-medium">Nhóm:</span> {currentKeyForTransfer.group}</div>
+                <div><span className="font-medium">Loại key:</span> 
+                  <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs font-medium">
+                    {currentKeyForTransfer.key_type || currentKeyForTransfer.type || '2key'}
+                  </span>
+                </div>
                 <div>
                   <span className="font-medium">Trạng thái:</span> 
                   <span className={`ml-2 px-2 py-1 rounded text-xs ${
@@ -1177,7 +1612,6 @@ const CreateKey = () => {
                   </span>
                 </div>
                 <div><span className="font-medium">Số ngày:</span> {currentKeyForTransfer.days}</div>
-                <div><span className="font-medium">Loại key:</span> {currentKeyForTransfer.accountCount} tài khoản/key</div>
                 <div><span className="font-medium">Khách hàng:</span> {currentKeyForTransfer.customer || 'Không có'}</div>
               </div>
               
@@ -1228,11 +1662,75 @@ const CreateKey = () => {
                     },
                     {
                       title: 'Slot key',
-                      render: (_, record) => (
-                        <span className="text-sm">
-                          {record.key_count || 0}/{record.max_keys || 3}
-                        </span>
-                      )
+                      render: (_, record) => {
+                        const current = record.current_key_count || 0;
+                        const currentMax = record.max_key_slots || 3;
+                        
+                        // Calculate what the max slots would be after transferring this key
+                        const keyType = currentKeyForTransfer?.key_type || currentKeyForTransfer?.type || '2key';
+                        let projectedMax = currentMax;
+                        if (keyType === '1key') projectedMax = 1;
+                        else if (keyType === '2key') projectedMax = 2;
+                        else if (keyType === '3key') projectedMax = 3;
+                        
+                        // Check if account would be full after transfer
+                        const wouldBeFull = (current + 1) >= projectedMax;
+                        const isIncompatible = record.key_type_restrictions && record.key_type_restrictions !== keyType;
+                        
+                        return (
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
+                              <span className={`text-sm ${
+                                current >= currentMax ? 'text-red-600 font-bold' :
+                                current > currentMax * 0.7 ? 'text-orange-600' :
+                                'text-gray-600'
+                              }`}>
+                                {current}/{currentMax}
+                              </span>
+                              {record.key_type_restrictions && (
+                                <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">
+                                  🔒 {record.key_type_restrictions}
+                                </span>
+                              )}
+                            </div>
+                            
+                            {/* Show projected slots after transfer */}
+                            {projectedMax !== currentMax && (
+                              <div className="text-xs">
+                                {projectedMax < currentMax ? (
+                                  <span className="bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded font-medium">
+                                    📉 Sau chuyển: {current + 1}/{projectedMax} (slot: {currentMax} → {projectedMax})
+                                  </span>
+                                ) : (
+                                  <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">
+                                    📈 Sau chuyển: {current + 1}/{projectedMax} (slot: {currentMax} → {projectedMax})
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            
+                            {projectedMax === currentMax && (
+                              <div className="text-xs">
+                                <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">
+                                  → Sau chuyển: {current + 1}/{projectedMax}
+                                </span>
+                              </div>
+                            )}
+                            
+                            {isIncompatible && (
+                              <span className="text-xs text-red-700 bg-red-100 px-1.5 py-0.5 rounded font-medium">
+                                ⚠️ Không tương thích
+                              </span>
+                            )}
+                            
+                            {wouldBeFull && (
+                              <span className="text-xs text-orange-700 bg-orange-100 px-1.5 py-0.5 rounded font-medium">
+                                ⚠️ Sẽ đầy sau chuyển
+                              </span>
+                            )}
+                          </div>
+                        );
+                      }
                     },
                     {
                       title: 'Trạng thái',
