@@ -65,7 +65,9 @@ const Account = () => {
         createdAt: acc.created_at,
         lastUsed: acc.last_used,
         usageCount: acc.usage_count || 0,
-        assigned_keys: acc.assigned_keys || '0/3' // Add assigned_keys to the transformed account
+        assigned_keys: acc.assigned_keys || '0/3', // Dynamic slot info from backend
+        max_key_slots: acc.max_key_slots || 3, // Max slots based on key type
+        key_type_restriction: acc.dominant_key_type || null // Key type restriction
       }))
       setAccounts(transformedAccounts)
     } else {
@@ -380,7 +382,14 @@ const Account = () => {
 
   // Key management functions
   const handleManageKeys = async (account) => {
-    setSelectedAccount(account)
+    // Ensure we have the full account information with dynamic slots
+    const fullAccount = {
+      ...account,
+      max_key_slots: account.max_key_slots || 3,
+      key_type_restriction: account.key_type_restriction || null
+    }
+    
+    setSelectedAccount(fullAccount)
     setKeyLoading(true)
     setKeyManageModal(true)
     
@@ -416,12 +425,28 @@ const Account = () => {
 
   const handleAssignKey = async (keyId) => {
     try {
-      await assignKey(selectedAccount.id, keyId)
-      messageApi.success('Đã gán key thành công!')
+      const response = await assignKey(selectedAccount.id, keyId)
+      
+      // Check if backend provided slot update information
+      if (response.data && response.data.slotChangeMessage) {
+        messageApi.success(`Đã gán key thành công! ${response.data.slotChangeMessage}`)
+      } else {
+        messageApi.success('Đã gán key thành công!')
+      }
       
       // Refresh account keys
       const keys = await getAccountKeys(selectedAccount.id)
       setAccountKeys(keys)
+      
+      // Update selectedAccount with new slot information if available
+      if (response.data && response.data.updatedAccount) {
+        setSelectedAccount(prev => ({
+          ...prev,
+          assigned_keys: response.data.updatedAccount.assigned_keys,
+          max_key_slots: response.data.updatedAccount.max_key_slots,
+          key_type_restriction: response.data.updatedAccount.key_type_restriction
+        }))
+      }
       
       // Refresh account list to update assigned_keys count
       fetchAccounts({ timeFilter })
@@ -431,6 +456,10 @@ const Account = () => {
         messageApi.warning('Hệ thống quản lý key chưa được cấu hình đầy đủ. Vui lòng liên hệ quản trị viên.')
       } else if (error.message.includes('Account not found') || error.message.includes('404')) {
         messageApi.error('Không tìm thấy tài khoản hoặc key. Vui lòng thử lại.')
+      } else if (error.message.includes('Cannot mix different key types')) {
+        messageApi.error('Không thể gán key loại khác vào tài khoản đã có key. Mỗi tài khoản chỉ có thể sử dụng một loại key.')
+      } else if (error.message.includes('maximum number of')) {
+        messageApi.error(error.message)
       } else {
         messageApi.error(error.message || 'Lỗi khi gán key!')
       }
@@ -445,6 +474,17 @@ const Account = () => {
       // Refresh account keys
       const keys = await getAccountKeys(selectedAccount.id)
       setAccountKeys(keys)
+      
+      // If no keys left, reset to default 3 slots
+      if (keys.length === 0) {
+        setSelectedAccount(prev => ({
+          ...prev,
+          assigned_keys: '0/3',
+          max_key_slots: 3,
+          key_type_restriction: null
+        }))
+        messageApi.info('Tài khoản đã hết key, slot đã được reset về mặc định 0/3')
+      }
       
       // Refresh account list to update assigned_keys count
       fetchAccounts({ timeFilter })
@@ -1019,7 +1059,12 @@ const Account = () => {
               <div>
                 <h4 className="font-medium mb-4 flex items-center gap-2">
                   <KeyOutlined />
-                  Keys đã gán ({accountKeys.length}/3)
+                  Keys đã gán ({accountKeys.length}/{selectedAccount.max_key_slots || 3})
+                  {selectedAccount.key_type_restriction && (
+                    <Tag color="blue" size="small">
+                      {selectedAccount.key_type_restriction}
+                    </Tag>
+                  )}
                 </h4>
                 {accountKeys.length > 0 ? (
                   <div className="space-y-2 mb-4">
@@ -1053,13 +1098,25 @@ const Account = () => {
               </div>
 
               {/* Keys có sẵn để gán */}
-              {accountKeys.length < 3 && (
+              {accountKeys.length < (selectedAccount.max_key_slots || 3) && (
                 <div>
                   <h4 className="font-medium mb-4">Keys có sẵn để gán:</h4>
                   {availableKeys.length > 0 ? (
                     <div className="space-y-2">
                       {availableKeys
-                        .filter(key => !accountKeys.some(ak => ak.id === key.id))
+                        .filter(key => {
+                          // Kiểm tra key chưa được gán cho account này
+                          const notAssigned = !accountKeys.some(ak => ak.id === key.id);
+                          
+                          // Kiểm tra tương thích key type
+                          if (selectedAccount.key_type_restriction) {
+                            // Account đã có key type restriction, chỉ gán key cùng loại
+                            return notAssigned && key.key_type === selectedAccount.key_type_restriction;
+                          } else {
+                            // Account chưa có key, có thể gán bất kỳ loại key nào
+                            return notAssigned;
+                          }
+                        })
                         .map(key => (
                           <div key={key.id} className="flex items-center justify-between p-3 border rounded-lg">
                             <div className="flex items-center gap-4">
@@ -1067,12 +1124,18 @@ const Account = () => {
                                 {key.code}
                               </Tag>
                               <span className="text-sm text-gray-600">{key.group_name}</span>
+                              <Tag color="purple" size="small">{key.key_type}</Tag>
                               <span className="text-xs text-gray-400">Trạng thái: {key.status}</span>
                             </div>
                             <Button 
                               size="small" 
                               type="primary"
                               onClick={() => handleAssignKey(key.id)}
+                              disabled={
+                                // Disable nếu key type không tương thích
+                                selectedAccount.key_type_restriction && 
+                                key.key_type !== selectedAccount.key_type_restriction
+                              }
                             >
                               Gán Key
                             </Button>
@@ -1081,16 +1144,19 @@ const Account = () => {
                     </div>
                   ) : (
                     <div className="text-center py-8 text-gray-500">
-                      Không có key nào có sẵn
+                      {selectedAccount.key_type_restriction ? 
+                        `Không có key loại ${selectedAccount.key_type_restriction} nào có sẵn` :
+                        'Không có key nào có sẵn'
+                      }
                     </div>
                   )}
                 </div>
               )}
 
-              {accountKeys.length >= 3 && (
+              {accountKeys.length >= (selectedAccount.max_key_slots || 3) && (
                 <Alert 
                   message="Đã đạt giới hạn tối đa" 
-                  description="Tài khoản này đã được gán tối đa 3 keys. Vui lòng bỏ gán một số key trước khi gán key mới."
+                  description={`Tài khoản này đã được gán tối đa ${selectedAccount.max_key_slots || 3} keys${selectedAccount.key_type_restriction ? ` loại ${selectedAccount.key_type_restriction}` : ''}. Vui lòng bỏ gán một số key trước khi gán key mới.`}
                   type="warning" 
                   showIcon 
                 />

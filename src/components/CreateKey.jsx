@@ -134,6 +134,7 @@ const CreateKey = () => {
         count: n,
         days: time,
         type,
+        accountCount: type === '1key' ? 1 : type === '2key' ? 2 : type === '3key' ? 3 : 2, // Add accountCount based on key type
         customer: customer || '',
       }
       
@@ -166,6 +167,7 @@ const CreateKey = () => {
         count: n,
         days: time,
         type,
+        accountCount: type === '1key' ? 1 : type === '2key' ? 2 : type === '3key' ? 3 : 2, // Add accountCount based on key type
         customer: customer || '',
       }
       
@@ -375,7 +377,18 @@ const CreateKey = () => {
         // Filter accounts based on key type and dynamic slot limits
         // Use the passed key parameter if available, otherwise use the current state
         const keyToAssign = keyForAssign || currentKeyForAssign;
-        const keyType = keyToAssign?.key_type || keyToAssign?.type || '2key';
+        
+        // Debug: Log key object structure to find the correct field name
+        console.log('🔍 Full key object structure:', keyToAssign);
+        console.log('🔍 Key properties:', Object.keys(keyToAssign || {}));
+        
+        // Try multiple possible field names for key type
+        const keyType = keyToAssign?.key_type || 
+                      keyToAssign?.type || 
+                      keyToAssign?.keyType ||
+                      keyToAssign?.key_type_name ||
+                      keyToAssign?.type_name ||
+                      '2key'; // fallback default
         
         console.log('🔍 Key type for filtering accounts:', keyType, 'Key data:', keyToAssign)
         
@@ -386,20 +399,10 @@ const CreateKey = () => {
           
           console.log(`🔍 Account ${account.username}: key_count=${account.key_count}, current_key_count=${account.current_key_count}, max_keys=${account.max_keys}, dominant_key_type=${account.dominant_key_type}`)
           
-          // Check key type restrictions first
-          let isCompatible = true;
-          if (account.key_type_restrictions && account.key_type_restrictions !== '') {
-            isCompatible = account.key_type_restrictions === keyType;
-          }
-          
-          if (!isCompatible) {
-            console.log(`❌ Account ${account.username} not compatible with ${keyType} (restricted to ${account.key_type_restrictions})`);
-            return false;
-          }
-          
           // Apply specific filtering logic based on key type
           if (keyType === '1key') {
-            // 1key/tài khoản: Chỉ hiển thị tài khoản trống (0/3 slot)
+            // 1key/tài khoản: CHỈ hiển thị tài khoản trống (0 keys) 
+            // Sau khi gán sẽ có slot 1/1 và không thể gán thêm key nào
             const isEmpty = currentKeys === 0;
             if (!isEmpty) {
               console.log(`❌ Account ${account.username} has ${currentKeys} keys, not suitable for 1key (needs empty account)`);
@@ -407,66 +410,43 @@ const CreateKey = () => {
             return isEmpty;
             
           } else if (keyType === '2key') {
-            // 2key/tài khoản: Hiển thị tài khoản trống (0/3) hoặc đã có 1 key loại 2key
+            // 2key/tài khoản: Hiển thị tài khoản trống (0 keys) HOẶC đã có 1 key loại 2key (slot 1/2)
+            // Tài khoản trống sẽ chuyển thành slot 2/2 khi gán key đầu tiên
             const isEmpty = currentKeys === 0;
-            const hasOne2Key = currentKeys === 1 && (account.dominant_key_type === '2key' || currentMaxSlots === 2);
+            const hasOne2Key = currentKeys === 1 && account.dominant_key_type === '2key' && currentMaxSlots === 2;
             
             if (!isEmpty && !hasOne2Key) {
-              console.log(`❌ Account ${account.username} has ${currentKeys} keys (type: ${account.dominant_key_type}), not suitable for 2key`);
+              console.log(`❌ Account ${account.username} has ${currentKeys} keys (type: ${account.dominant_key_type}, max_slots: ${currentMaxSlots}), not suitable for 2key`);
             }
             return isEmpty || hasOne2Key;
             
           } else if (keyType === '3key') {
-            // 3key/tài khoản: Chỉ hiển thị tài khoản chưa gán key HOẶC đã gán key loại 3key
-            // Không được hiển thị tài khoản đã gán key loại 2key để tránh xung đột slot
-            const projectedMaxSlots = 3; // 3key luôn có slot = 3
-            const hasSlots = currentKeys < projectedMaxSlots;
+            // 3key/tài khoản: Hiển thị tài khoản trống (0 keys) HOẶC đã có key loại 3key với còn slot
+            // Tài khoản trống vẫn giữ slot 3/3 khi gán key đầu tiên
+            const isEmpty = currentKeys === 0;
             
-            // Kiểm tra loại key dominat nếu tài khoản đã có key
             if (currentKeys > 0) {
               const dominantKeyType = account.dominant_key_type;
               
-              // Nếu tài khoản đã có key loại 2key, không cho phép gán 3key
-              if (dominantKeyType === '2key') {
-                console.log(`❌ Account ${account.username} has ${currentKeys} keys of type ${dominantKeyType}, cannot assign 3key to avoid slot conflict`);
-                return false;
-              }
-              
-              // Nếu tài khoản đã có key loại 1key, không cho phép gán 3key  
-              if (dominantKeyType === '1key') {
-                console.log(`❌ Account ${account.username} has ${currentKeys} keys of type ${dominantKeyType}, cannot assign 3key to avoid slot conflict`);
-                return false;
-              }
-              
               // Chỉ cho phép nếu tài khoản đã có key loại 3key và còn slot
-              if (dominantKeyType === '3key' && hasSlots) {
+              if (dominantKeyType === '3key' && currentKeys < 3) {
                 console.log(`✅ Account ${account.username} has ${currentKeys} keys of type 3key, can accept more 3key`);
                 return true;
-              }
-              
-              // Nếu không rõ loại key dominant nhưng đã có key, từ chối để an toàn
-              if (!dominantKeyType) {
-                console.log(`❌ Account ${account.username} has ${currentKeys} keys but unknown dominant key type, rejecting for safety`);
+              } else {
+                console.log(`❌ Account ${account.username} has ${currentKeys} keys of type ${dominantKeyType}, cannot assign 3key`);
                 return false;
               }
             }
             
             // Tài khoản chưa có key nào (currentKeys === 0), có thể gán 3key
-            if (currentKeys === 0) {
-              console.log(`✅ Account ${account.username} is empty, can accept 3key`);
-              return true;
-            }
-            
-            if (!hasSlots) {
-              console.log(`❌ Account ${account.username} has ${currentKeys}/3 keys, no slots available for 3key`);
-            }
-            return hasSlots;
+            console.log(`✅ Account ${account.username} is empty, can accept 3key`);
+            return true;
             
           } else {
             // Default fallback for unknown key types
             console.log(`⚠️ Unknown key type: ${keyType}, using default logic`);
-            const projectedMaxSlots = 3;
-            return currentKeys < projectedMaxSlots;
+            const hasSlots = currentKeys < 3;
+            return hasSlots;
           }
         }).map(account => ({
           ...account,
@@ -476,47 +456,62 @@ const CreateKey = () => {
           
           // Add computed fields for display with projected slots
           projected_max_slots: (() => {
-            // Calculate projected max slots based on key type being assigned
-            if (keyType === '1key') return 1;
-            else if (keyType === '2key') return 2; 
-            else if (keyType === '3key') return 3;
-            return account.max_keys || account.max_key_slots || 3;
+            // Calculate projected max slots based on key type being assigned and current account state
+            const currentKeys = account.key_count || account.current_key_count || 0;
+            
+            if (currentKeys === 0) {
+              // Tài khoản trống: slot tối đa được xác định bởi key type sẽ gán
+              if (keyType === '1key') {
+                return 1; // 1key -> slot tối đa 1
+              } else if (keyType === '2key') {
+                return 2; // 2key -> slot tối đa 2  
+              } else if (keyType === '3key') {
+                return 3; // 3key -> slot tối đa 3
+              } else {
+                return 3; // Default
+              }
+            } else {
+              // Tài khoản đã có key: sử dụng max_key_slots hiện tại từ backend
+              return account.max_keys || account.max_key_slots || 3;
+            }
           })(),
           available_slots: (() => {
             const currentKeys = account.key_count || account.current_key_count || 0;
             
-            // Calculate available slots based on current account state and key type
+            // Calculate available slots based on current account state and key type being assigned
             if (keyType === '1key') {
-              // 1key: Account should be empty, so available = 1 - currentKeys
-              return Math.max(0, 1 - currentKeys);
+              // 1key: Chỉ tài khoản trống, sau khi gán sẽ là 1/1 (full)
+              return currentKeys === 0 ? 1 : 0;
+              
             } else if (keyType === '2key') {
-              // 2key: Check if account is empty or has 1x2key already
-              const dominantKeyType = account.dominant_key_type;
+              // 2key: Tài khoản trống hoặc đã có 1x2key
               if (currentKeys === 0) {
-                // Empty account, can accept 2 keys of 2key type
+                // Tài khoản trống, sau khi gán key đầu tiên sẽ là 1/2
                 return 2;
-              } else if (currentKeys === 1 && dominantKeyType === '2key') {
-                // Already has 1x2key, can accept 1 more
+              } else if (currentKeys === 1 && account.dominant_key_type === '2key') {
+                // Đã có 1x2key, có thể gán thêm 1 key nữa
                 return 1;
               } else {
-                // Other cases shouldn't appear due to filtering, but handle gracefully
+                // Các trường hợp khác không thể gán 2key
                 return 0;
               }
+              
             } else if (keyType === '3key') {
-              // 3key: Chỉ cho phép tài khoản trống hoặc đã có key loại 3key
+              // 3key: Tài khoản trống hoặc đã có key loại 3key
               if (currentKeys === 0) {
-                // Tài khoản trống, có thể nhận 3 key loại 3key
+                // Tài khoản trống, sau khi gán key đầu tiên sẽ là 1/3
                 return 3;
               } else {
                 const dominantKeyType = account.dominant_key_type;
                 if (dominantKeyType === '3key') {
-                  // Tài khoản đã có key loại 3key, tính slot còn lại
+                  // Tài khoản có key loại 3key, tính slot còn lại
                   return Math.max(0, 3 - currentKeys);
                 } else {
-                  // Tài khoản có key loại khác (1key/2key), không thể gán 3key
+                  // Tài khoản có key loại khác, không thể gán 3key
                   return 0;
                 }
               }
+              
             } else {
               // Default fallback
               const projectedMax = account.max_keys || account.max_key_slots || 3;
@@ -531,9 +526,9 @@ const CreateKey = () => {
           available: accountsWithSlots.length,
           keyType,
           filterLogic: {
-            '1key': 'Only empty accounts (0/3 slots)',
-            '2key': 'Empty accounts (0/3) or accounts with 1x2key (1/2 slots)', 
-            '3key': 'Empty accounts (0/3) or accounts with existing 3key slots (1/3, 2/3) - excludes accounts with 1key/2key to avoid slot conflicts'
+            '1key': 'Chỉ tài khoản trống (0 keys) - sau khi gán sẽ thành 1/1 và không thể gán thêm',
+            '2key': 'Tài khoản trống (0 keys) hoặc đã có 1 key loại 2key (1/2) - tài khoản trống sẽ thành 2 slots tối đa', 
+            '3key': 'Tài khoản trống (0 keys) hoặc đã có key loại 3key với slot còn trống - giữ nguyên 3 slots tối đa'
           }[keyType] || 'Default logic',
           accountsDetails: accountsWithSlots.map(acc => ({
             id: acc.id,
@@ -592,6 +587,7 @@ const CreateKey = () => {
                 max_key_slots: backendAccount.max_key_slots,
                 max_keys: backendAccount.max_key_slots, // Dual field for compatibility
                 assigned_keys: backendAccount.assigned_keys,
+                dominant_key_type: backendAccount.key_type_restriction, // Update dominant key type
                 projected_max_slots: projectedMax,
                 available_slots: Math.max(0, projectedMax - backendAccount.current_key_count)
               }
@@ -606,31 +602,10 @@ const CreateKey = () => {
             assigned_keys: response.data.updatedAccount.assigned_keys
           });
         } else {
-          console.log('⚠️ No updated account data from backend, using fallback calculation');
+          console.log('⚠️ No updated account data from backend, refreshing from server');
           
-          // Fallback: Cập nhật local state như trước
-          const updatedAccounts = accounts.map(account => {
-            if (account.id === selectedAccountId) {
-              // Use normalized field names
-              const currentKeys = account.current_key_count || account.key_count || 0;
-              const newKeyCount = currentKeys + 1;
-              const keyType = currentKeyForAssign?.key_type || currentKeyForAssign?.type || '2key';
-              const projectedMax = keyType === '1key' ? 1 : keyType === '2key' ? 2 : keyType === '3key' ? 3 : (account.max_key_slots || account.max_keys || 3);
-              
-              console.log(`🎯 Fallback update for account ${selectedAccountId}: currentKeys=${currentKeys} -> newKeyCount=${newKeyCount}, projectedMax=${projectedMax}`);
-              
-              return {
-                ...account,
-                current_key_count: newKeyCount,
-                key_count: newKeyCount, // Update both field names for compatibility
-                projected_max_slots: projectedMax,
-                available_slots: Math.max(0, projectedMax - newKeyCount)
-              }
-            }
-            return account
-          })
-          
-          setAccounts([...updatedAccounts]);
+          // Fallback: Refresh danh sách accounts từ server ngay lập tức
+          await fetchAccountsWithSlots(currentKeyForAssign);
         }
         
         // Force update state và table re-render để trigger UI update
@@ -931,6 +906,9 @@ const CreateKey = () => {
     ...k,
     group: k.group_code || k.group || activeGroup, // Fallback to activeGroup if no group info
     days: k.days_remaining || k.days_valid || k.days || 0,
+    // Đảm bảo key_type luôn có giá trị
+    key_type: k.key_type || k.type || k.keyType || '2key', // Map từ các field có thể có
+    type: k.key_type || k.type || k.keyType || '2key', // Compatibility field
     accountCount: k.assigned_accounts ? 
       (typeof k.assigned_accounts === 'string' ? 
         JSON.parse(k.assigned_accounts).length : 
