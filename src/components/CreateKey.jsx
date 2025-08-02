@@ -345,6 +345,7 @@ const CreateKey = () => {
       return
     }
 
+    // Set key data first, then fetch accounts to ensure correct key type is used
     setCurrentKeyForAssign(key)
     setIsAssignModalOpen(true)
     setSelectedAccountId(null)
@@ -352,7 +353,7 @@ const CreateKey = () => {
     
     // Always fetch fresh data to ensure accurate key counts
     // Không sử dụng cached data từ database query để đảm bảo số liệu chính xác
-    await fetchAccountsWithSlots();
+    await fetchAccountsWithSlots(key);
   }
 
   const handleAssignCancel = () => {
@@ -364,7 +365,7 @@ const CreateKey = () => {
     setTableKey(0) // Reset table key
   }
 
-  const fetchAccountsWithSlots = async () => {
+  const fetchAccountsWithSlots = async (keyForAssign = null) => {
     try {
       setLoadingAccounts(true)
       const response = await accountsAPI.getAccounts()
@@ -372,7 +373,11 @@ const CreateKey = () => {
         console.log('🔍 Raw accounts data from API:', response.data.accounts.slice(0, 2)) // Debug log
         
         // Filter accounts based on key type and dynamic slot limits
-        const keyType = currentKeyForAssign?.key_type || currentKeyForAssign?.type || '2key';
+        // Use the passed key parameter if available, otherwise use the current state
+        const keyToAssign = keyForAssign || currentKeyForAssign;
+        const keyType = keyToAssign?.key_type || keyToAssign?.type || '2key';
+        
+        console.log('🔍 Key type for filtering accounts:', keyType, 'Key data:', keyToAssign)
         
         const accountsWithSlots = response.data.accounts.filter(account => {
           // Map backend field names to frontend expected names
@@ -412,9 +417,45 @@ const CreateKey = () => {
             return isEmpty || hasOne2Key;
             
           } else if (keyType === '3key') {
-            // 3key/tài khoản: Hiển thị tài khoản có thể nhận thêm key loại 3key (0/3, 1/3, 2/3)
+            // 3key/tài khoản: Chỉ hiển thị tài khoản chưa gán key HOẶC đã gán key loại 3key
+            // Không được hiển thị tài khoản đã gán key loại 2key để tránh xung đột slot
             const projectedMaxSlots = 3; // 3key luôn có slot = 3
             const hasSlots = currentKeys < projectedMaxSlots;
+            
+            // Kiểm tra loại key dominat nếu tài khoản đã có key
+            if (currentKeys > 0) {
+              const dominantKeyType = account.dominant_key_type;
+              
+              // Nếu tài khoản đã có key loại 2key, không cho phép gán 3key
+              if (dominantKeyType === '2key') {
+                console.log(`❌ Account ${account.username} has ${currentKeys} keys of type ${dominantKeyType}, cannot assign 3key to avoid slot conflict`);
+                return false;
+              }
+              
+              // Nếu tài khoản đã có key loại 1key, không cho phép gán 3key  
+              if (dominantKeyType === '1key') {
+                console.log(`❌ Account ${account.username} has ${currentKeys} keys of type ${dominantKeyType}, cannot assign 3key to avoid slot conflict`);
+                return false;
+              }
+              
+              // Chỉ cho phép nếu tài khoản đã có key loại 3key và còn slot
+              if (dominantKeyType === '3key' && hasSlots) {
+                console.log(`✅ Account ${account.username} has ${currentKeys} keys of type 3key, can accept more 3key`);
+                return true;
+              }
+              
+              // Nếu không rõ loại key dominant nhưng đã có key, từ chối để an toàn
+              if (!dominantKeyType) {
+                console.log(`❌ Account ${account.username} has ${currentKeys} keys but unknown dominant key type, rejecting for safety`);
+                return false;
+              }
+            }
+            
+            // Tài khoản chưa có key nào (currentKeys === 0), có thể gán 3key
+            if (currentKeys === 0) {
+              console.log(`✅ Account ${account.username} is empty, can accept 3key`);
+              return true;
+            }
             
             if (!hasSlots) {
               console.log(`❌ Account ${account.username} has ${currentKeys}/3 keys, no slots available for 3key`);
@@ -462,8 +503,20 @@ const CreateKey = () => {
                 return 0;
               }
             } else if (keyType === '3key') {
-              // 3key: Always projected to 3 slots
-              return Math.max(0, 3 - currentKeys);
+              // 3key: Chỉ cho phép tài khoản trống hoặc đã có key loại 3key
+              if (currentKeys === 0) {
+                // Tài khoản trống, có thể nhận 3 key loại 3key
+                return 3;
+              } else {
+                const dominantKeyType = account.dominant_key_type;
+                if (dominantKeyType === '3key') {
+                  // Tài khoản đã có key loại 3key, tính slot còn lại
+                  return Math.max(0, 3 - currentKeys);
+                } else {
+                  // Tài khoản có key loại khác (1key/2key), không thể gán 3key
+                  return 0;
+                }
+              }
             } else {
               // Default fallback
               const projectedMax = account.max_keys || account.max_key_slots || 3;
@@ -480,7 +533,7 @@ const CreateKey = () => {
           filterLogic: {
             '1key': 'Only empty accounts (0/3 slots)',
             '2key': 'Empty accounts (0/3) or accounts with 1x2key (1/2 slots)', 
-            '3key': 'Accounts with available slots for 3key (0/3, 1/3, 2/3)'
+            '3key': 'Empty accounts (0/3) or accounts with existing 3key slots (1/3, 2/3) - excludes accounts with 1key/2key to avoid slot conflicts'
           }[keyType] || 'Default logic',
           accountsDetails: accountsWithSlots.map(acc => ({
             id: acc.id,
@@ -613,7 +666,7 @@ const CreateKey = () => {
             
             // Optionally refresh accounts list để có dữ liệu chính xác nhất từ server
             // Nhưng không làm gián đoạn UX vì local state đã được cập nhật
-            await fetchAccountsWithSlots()
+            await fetchAccountsWithSlots(currentKeyForAssign)
             
             // Force re-render sau khi refresh từ server
             setTableKey(prev => prev + 1)
@@ -1556,7 +1609,7 @@ const CreateKey = () => {
             <Button 
               onClick={async () => {
                 messageApi.info('Đang làm mới danh sách tài khoản...')
-                await fetchAccountsWithSlots()
+                await fetchAccountsWithSlots(currentKeyForAssign)
                 messageApi.success('Đã cập nhật danh sách tài khoản!')
               }}
               disabled={loadingAccounts}
