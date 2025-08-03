@@ -114,12 +114,16 @@ router.get('/', [
         va.is_active,
         va.created_at,
         va.last_used,
-        -- Tính số lượng key đã gán từ bảng account_keys (fallback to 0 if table doesn't exist)
-        COALESCE(ak_count.key_count, 0) as usage_count,
-        -- Sử dụng key_count làm current_key_count cho consistency với frontend
+        -- Tính số lượng key đã gán từ bảng account_keys
         COALESCE(ak_count.key_count, 0) as key_count,
         COALESCE(ak_count.key_count, 0) as current_key_count,
-        -- Lấy key code từ key_id cũ trước (tạm thời)
+        COALESCE(ak_count.key_count, 0) as usage_count,
+        -- Lấy thông tin key type chủ đạo từ key được gán nhiều nhất
+        COALESCE(ak_dominant.dominant_key_type, '2key') as dominant_key_type,
+        -- Tính slot tối đa dựa trên key type của key đầu tiên được gán (dynamic slots)
+        COALESCE(ak_slots.max_key_slots, 3) as max_key_slots,
+        COALESCE(ak_slots.max_key_slots, 3) as max_keys,
+        -- Lấy key code từ key_id cũ trước (tạm thời để tương thích)
         vk.code as key_code,
         kg.code as group_code,
         CASE 
@@ -128,57 +132,62 @@ router.get('/', [
           ELSE 'hoạt động'
         END as status,
         TIMESTAMPDIFF(MINUTE, NOW(), va.expires_at) as minutes_remaining,
-        -- Lấy key type chủ đạo của account (nếu có) - sử dụng ANY_VALUE để tránh GROUP BY error
-        ANY_VALUE(dominant_key_type.key_type) as dominant_key_type,
-        -- Tính max slots dựa trên key type (default 3 cho account chưa có key)
-        CASE 
-          WHEN ANY_VALUE(dominant_key_type.key_type) = '1key' THEN 1
-          WHEN ANY_VALUE(dominant_key_type.key_type) = '2key' THEN 2
-          WHEN ANY_VALUE(dominant_key_type.key_type) = '3key' THEN 3
-          ELSE 3
-        END as max_key_slots,
-        -- Cũng thêm max_keys để compatibility
-        CASE 
-          WHEN ANY_VALUE(dominant_key_type.key_type) = '1key' THEN 1
-          WHEN ANY_VALUE(dominant_key_type.key_type) = '2key' THEN 2
-          WHEN ANY_VALUE(dominant_key_type.key_type) = '3key' THEN 3
-          ELSE 3
-        END as max_keys,
-        -- Cột Key đã gán: hiển thị với max slots động
+        -- Cột Key đã gán: hiển thị số key thực tế với slot động dựa trên key type
         CONCAT(
           COALESCE(ak_count.key_count, 0), 
-          '/',
-          CASE 
-            WHEN ANY_VALUE(dominant_key_type.key_type) = '1key' THEN 1
-            WHEN ANY_VALUE(dominant_key_type.key_type) = '2key' THEN 2
-            WHEN ANY_VALUE(dominant_key_type.key_type) = '3key' THEN 3
-            ELSE 3
-          END
-        ) as assigned_keys
+          '/', 
+          COALESCE(ak_slots.max_key_slots, 3)
+        ) as assigned_keys,
+        -- Danh sách key codes được gán (cho frontend debug)
+        COALESCE(ak_keys.assigned_key_codes, '') as assigned_key_codes
       FROM vpn_accounts va
       LEFT JOIN vpn_keys vk ON va.key_id = vk.id
       LEFT JOIN key_groups kg ON vk.group_id = kg.id
+      -- Đếm số key active cho mỗi account
       LEFT JOIN (
         SELECT account_id, COUNT(*) as key_count 
         FROM account_keys 
         WHERE is_active = 1 
         GROUP BY account_id
       ) ak_count ON va.id = ak_count.account_id
+      -- Tìm key type chủ đạo (key type đầu tiên được gán cho mỗi account)
       LEFT JOIN (
         SELECT 
           ak.account_id,
-          vk.key_type
+          MIN(vk.key_type) as dominant_key_type
         FROM account_keys ak
-        JOIN vpn_keys vk ON ak.key_id = vk.id
+        INNER JOIN vpn_keys vk ON ak.key_id = vk.id
         WHERE ak.is_active = 1
-        GROUP BY ak.account_id, vk.key_type
-        ORDER BY COUNT(*) DESC
-        LIMIT 999999999
-      ) dominant_key_type ON va.id = dominant_key_type.account_id
+        GROUP BY ak.account_id
+      ) ak_dominant ON va.id = ak_dominant.account_id
+      -- Tính slot tối đa dựa trên key type của key đầu tiên
+      LEFT JOIN (
+        SELECT 
+          ak.account_id,
+          CASE 
+            WHEN MIN(vk.key_type) = '1key' THEN 1
+            WHEN MIN(vk.key_type) = '2key' THEN 2
+            WHEN MIN(vk.key_type) = '3key' THEN 3
+            ELSE 3
+          END as max_key_slots
+        FROM account_keys ak
+        INNER JOIN vpn_keys vk ON ak.key_id = vk.id
+        WHERE ak.is_active = 1
+        GROUP BY ak.account_id
+      ) ak_slots ON va.id = ak_slots.account_id
+      -- Lấy danh sách key codes (cho debug)
+      LEFT JOIN (
+        SELECT 
+          ak.account_id,
+          GROUP_CONCAT(vk.code SEPARATOR ', ') as assigned_key_codes
+        FROM account_keys ak
+        INNER JOIN vpn_keys vk ON ak.key_id = vk.id
+        WHERE ak.is_active = 1
+        GROUP BY ak.account_id
+      ) ak_keys ON va.id = ak_keys.account_id
       WHERE 1=1
       ${searchCondition}
       ${timeCondition}
-      GROUP BY va.id, va.username, va.password, va.expires_at, va.is_active, va.created_at, va.last_used, vk.code, kg.code, ak_count.key_count
       ORDER BY va.expires_at ASC
       LIMIT ${offset}, ${limit}
     `;
@@ -690,15 +699,6 @@ router.post('/:id/assign-key', [
       const keyInfo = keyCheck.data[0];
       console.log(`Key ${keyId} found: ${keyInfo.code}, status: ${keyInfo.status}, account_count: ${keyInfo.account_count}, key_type: ${keyInfo.key_type}`);
 
-      // Debug: Kiểm tra key_type có undefined không
-      if (!keyInfo.key_type) {
-        console.error(`⚠️ Key ${keyId} has undefined key_type!`);
-        return res.status(400).json({
-          success: false,
-          message: 'Key type is not defined. Please check key configuration.'
-        });
-      }
-
       // Check if key is already assigned to this account
       const existingAssignment = await executeQuery(
         'SELECT id FROM account_keys WHERE account_id = ? AND key_id = ? AND is_active = 1',
@@ -712,67 +712,80 @@ router.post('/:id/assign-key', [
         });
       }
 
-      // Check how many keys are already assigned to this account (dynamic limit based on key type)
-      const accountKeyCountCheck = await executeQuery(
-        'SELECT COUNT(*) as count FROM account_keys WHERE account_id = ? AND is_active = 1',
-        [accountId]
-      );
-
-      const currentKeyCount = accountKeyCountCheck.success ? accountKeyCountCheck.data[0].count : 0;
-
-      // Get current account's key type and count
-      const accountKeyTypeCheck = await executeQuery(`
-        SELECT vk.key_type, COUNT(*) as count 
-        FROM account_keys ak 
-        JOIN vpn_keys vk ON ak.key_id = vk.id 
-        WHERE ak.account_id = ? AND ak.is_active = 1 
-        GROUP BY vk.key_type
-        ORDER BY COUNT(*) DESC
-        LIMIT 1
-      `, [accountId]);
-
-      let maxKeysAllowed = 3; // Default max for new accounts
-      let accountKeyType = null;
-      let isFirstKey = currentKeyCount === 0;
-
-      if (accountKeyTypeCheck.success && accountKeyTypeCheck.data.length > 0) {
-        // Account already has keys, get the dominant key type
-        accountKeyType = accountKeyTypeCheck.data[0].key_type;
+      // Check how many keys are already assigned to this account và áp dụng logic slot động
+      const accountKeyInfoQuery = `
+        SELECT 
+          COUNT(*) as current_key_count,
+          MIN(vk.key_type) as first_key_type,
+          MAX(vk.key_type) as last_key_type,
+          GROUP_CONCAT(DISTINCT vk.key_type) as all_key_types,
+          CASE 
+            WHEN MIN(vk.key_type) = '1key' THEN 1
+            WHEN MIN(vk.key_type) = '2key' THEN 2
+            WHEN MIN(vk.key_type) = '3key' THEN 3
+            ELSE 3
+          END as max_slots_based_on_type
+        FROM account_keys ak
+        INNER JOIN vpn_keys vk ON ak.key_id = vk.id
+        WHERE ak.account_id = ? AND ak.is_active = 1
+      `;
+      
+      const accountKeyInfo = await executeQuery(accountKeyInfoQuery, [accountId]);
+      
+      if (accountKeyInfo.success && accountKeyInfo.data.length > 0 && accountKeyInfo.data[0].current_key_count > 0) {
+        const currentKeyCount = accountKeyInfo.data[0].current_key_count;
+        const firstKeyType = accountKeyInfo.data[0].first_key_type;
+        const allKeyTypes = accountKeyInfo.data[0].all_key_types;
+        const maxSlotsBasedOnType = accountKeyInfo.data[0].max_slots_based_on_type;
         
-        // Set max keys based on EXISTING key type (tài khoản đã có key type cố định)
-        if (accountKeyType === '1key') {
-          maxKeysAllowed = 1;
-        } else if (accountKeyType === '2key') {
-          maxKeysAllowed = 2;
-        } else if (accountKeyType === '3key') {
-          maxKeysAllowed = 3;
-        }
-
-        // Check if new key type is compatible with existing keys
-        if (accountKeyType !== keyInfo.key_type) {
+        console.log(`Account ${accountId} current status:`, {
+          currentKeyCount,
+          firstKeyType,
+          allKeyTypes,
+          maxSlotsBasedOnType,
+          newKeyType: keyInfo.key_type
+        });
+        
+        // Kiểm tra key type compatibility - CHỈ cho phép cùng loại key
+        if (keyInfo.key_type !== firstKeyType) {
           return res.status(400).json({
             success: false,
-            message: `Tài khoản đã có key loại ${accountKeyType}. Không thể gán key loại ${keyInfo.key_type} khác vào cùng tài khoản.`
+            message: `Cannot assign ${keyInfo.key_type} to account that already has ${firstKeyType}. Key types must match.`
+          });
+        }
+        
+        // Áp dụng logic slot động dựa trên key type
+        if (firstKeyType === '1key' && currentKeyCount >= 1) {
+          return res.status(400).json({
+            success: false,
+            message: 'Account with 1key type can only have 1 key maximum'
+          });
+        }
+        
+        if (firstKeyType === '2key' && currentKeyCount >= 2) {
+          return res.status(400).json({
+            success: false,
+            message: 'Account with 2key type can only have 2 keys maximum'
+          });
+        }
+        
+        if (firstKeyType === '3key' && currentKeyCount >= 3) {
+          return res.status(400).json({
+            success: false,
+            message: 'Account with 3key type can only have 3 keys maximum'
+          });
+        }
+        
+        // Kiểm tra tổng quát - không được vượt quá slot limit
+        if (currentKeyCount >= maxSlotsBasedOnType) {
+          return res.status(400).json({
+            success: false,
+            message: `Account already has maximum number of keys (${maxSlotsBasedOnType}) based on key type ${firstKeyType}`
           });
         }
       } else {
-        // Account has no keys yet, set max based on NEW key type being assigned
-        // Slot tối đa sẽ được xác định bởi key đầu tiên được gán
-        if (keyInfo.key_type === '1key') {
-          maxKeysAllowed = 1; // 1key/tài khoản: chỉ 1 slot
-        } else if (keyInfo.key_type === '2key') {
-          maxKeysAllowed = 2; // 2key/tài khoản: 2 slots
-        } else if (keyInfo.key_type === '3key') {
-          maxKeysAllowed = 3; // 3key/tài khoản: 3 slots
-        }
-      }
-
-      // Check if adding this key would exceed the limit
-      if (currentKeyCount >= maxKeysAllowed) {
-        return res.status(400).json({
-          success: false,
-          message: `Account already has maximum number of ${keyInfo.key_type} keys (${maxKeysAllowed})`
-        });
+        // Account trống - cho phép gán bất kỳ loại key nào
+        console.log(`Account ${accountId} is empty, allowing ${keyInfo.key_type} assignment`);
       }
 
       // Check how many accounts are already assigned to this key (limit based on key's account_count)
@@ -795,10 +808,12 @@ router.post('/:id/assign-key', [
       );
 
       if (!result.success) {
-        console.error('Failed to assign key:', result.error);
+        console.error('Database query error:', result.error);
         return res.status(500).json({
           success: false,
-          message: 'Failed to assign key to account'
+          message: result.error.includes('Duplicate entry') ? 
+            'Key is already assigned to this account' : 
+            'Failed to assign key to account'
         });
       }
 
@@ -814,12 +829,56 @@ router.post('/:id/assign-key', [
         // Continue even if status update fails
       }
 
+      // Lấy thông tin account sau khi gán key để trả về cho frontend
+      const updatedAccountQuery = `
+        SELECT 
+          va.id,
+          va.username,
+          COALESCE(ak_count.key_count, 0) as current_key_count,
+          CASE 
+            WHEN MIN(vk.key_type) = '1key' THEN 1
+            WHEN MIN(vk.key_type) = '2key' THEN 2
+            WHEN MIN(vk.key_type) = '3key' THEN 3
+            ELSE 3
+          END as max_key_slots,
+          CONCAT(
+            COALESCE(ak_count.key_count, 0), 
+            '/', 
+            CASE 
+              WHEN MIN(vk.key_type) = '1key' THEN 1
+              WHEN MIN(vk.key_type) = '2key' THEN 2
+              WHEN MIN(vk.key_type) = '3key' THEN 3
+              ELSE 3
+            END
+          ) as assigned_keys,
+          MIN(vk.key_type) as key_type_restriction
+        FROM vpn_accounts va
+        LEFT JOIN account_keys ak ON va.id = ak.account_id AND ak.is_active = 1
+        LEFT JOIN vpn_keys vk ON ak.key_id = vk.id
+        LEFT JOIN (
+          SELECT account_id, COUNT(*) as key_count 
+          FROM account_keys 
+          WHERE is_active = 1 AND account_id = ?
+          GROUP BY account_id
+        ) ak_count ON va.id = ak_count.account_id
+        WHERE va.id = ?
+        GROUP BY va.id, va.username, ak_count.key_count
+      `;
+
+      const updatedAccount = await executeQuery(updatedAccountQuery, [accountId, accountId]);
+
       console.log(`✅ Key ${keyId} (${keyInfo.code}) assigned to account ${accountId} successfully`);
 
-      // Get updated account information
-      const newKeyCount = currentKeyCount + 1;
-      // isFirstKey đã được define ở trên
-      
+      // Tạo message về thay đổi slot dựa trên key type
+      let slotChangeMessage = '';
+      if (keyInfo.key_type === '1key') {
+        slotChangeMessage = 'Tài khoản chuyển thành 1 slot tối đa (1key/tài khoản).';
+      } else if (keyInfo.key_type === '2key') {
+        slotChangeMessage = 'Tài khoản chuyển thành 2 slot tối đa (2key/tài khoản).';
+      } else if (keyInfo.key_type === '3key') {
+        slotChangeMessage = 'Tài khoản giữ nguyên 3 slot tối đa (3key/tài khoản).';
+      }
+
       res.json({
         success: true,
         message: `Key ${keyInfo.code} assigned successfully`,
@@ -827,15 +886,9 @@ router.post('/:id/assign-key', [
           keyId: keyId,
           keyCode: keyInfo.code,
           accountId: accountId,
-          updatedAccount: {
-            current_key_count: newKeyCount,
-            max_key_slots: maxKeysAllowed,
-            key_type_restriction: keyInfo.key_type,
-            assigned_keys: `${newKeyCount}/${maxKeysAllowed}`
-          },
-          slotChangeMessage: isFirstKey ? 
-            `Slot tài khoản đã được thiết lập thành ${newKeyCount}/${maxKeysAllowed} cho key loại ${keyInfo.key_type}` :
-            `Key đã gán: ${newKeyCount}/${maxKeysAllowed} (${keyInfo.key_type})`
+          slotChangeMessage: slotChangeMessage,
+          updatedAccount: updatedAccount.success && updatedAccount.data.length > 0 ? 
+            updatedAccount.data[0] : null
         }
       });
 
@@ -851,9 +904,25 @@ router.post('/:id/assign-key', [
 
   } catch (error) {
     console.error('Assign key error:', error);
-    res.status(500).json({
+    
+    // Xử lý các loại lỗi cụ thể
+    let statusCode = 500;
+    let message = 'Internal server error';
+    
+    if (error.message && error.message.includes('Duplicate entry')) {
+      statusCode = 400;
+      message = 'Key is already assigned to this account';
+    } else if (error.message && error.message.includes('cannot have more than 3 active keys')) {
+      statusCode = 400;
+      message = 'Account already has maximum number of keys (3)';
+    } else if (error.code === 'ER_DUP_ENTRY') {
+      statusCode = 400;
+      message = 'Key is already assigned to this account';
+    }
+    
+    res.status(statusCode).json({
       success: false,
-      message: 'Internal server error'
+      message: message
     });
   }
 });
@@ -931,22 +1000,9 @@ router.delete('/:id/unassign-key/:keyId', async (req, res) => {
 
       console.log(`✅ Key ${keyId} unassigned from account ${accountId} successfully`);
 
-      // Get remaining key count for this account
-      const remainingKeysCheck = await executeQuery(
-        'SELECT COUNT(*) as count FROM account_keys WHERE account_id = ? AND is_active = 1',
-        [accountId]
-      );
-
-      const remainingKeyCount = remainingKeysCheck.success ? remainingKeysCheck.data[0].count : 0;
-      
       res.json({
         success: true,
-        message: 'Key unassigned successfully',
-        data: {
-          accountId: accountId,
-          remainingKeys: remainingKeyCount,
-          slotReset: remainingKeyCount === 0 // Indicate if slots should be reset to default
-        }
+        message: 'Key unassigned successfully'
       });
 
     } catch (tableError) {

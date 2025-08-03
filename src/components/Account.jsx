@@ -65,9 +65,7 @@ const Account = () => {
         createdAt: acc.created_at,
         lastUsed: acc.last_used,
         usageCount: acc.usage_count || 0,
-        assigned_keys: acc.assigned_keys || '0/3', // Dynamic slot info from backend
-        max_key_slots: acc.max_key_slots || 3, // Max slots based on key type
-        key_type_restriction: acc.dominant_key_type || null // Key type restriction
+        assigned_keys: acc.assigned_keys || '0/3' // Add assigned_keys to the transformed account
       }))
       setAccounts(transformedAccounts)
     } else {
@@ -382,14 +380,7 @@ const Account = () => {
 
   // Key management functions
   const handleManageKeys = async (account) => {
-    // Ensure we have the full account information with dynamic slots
-    const fullAccount = {
-      ...account,
-      max_key_slots: account.max_key_slots || 3,
-      key_type_restriction: account.key_type_restriction || null
-    }
-    
-    setSelectedAccount(fullAccount)
+    setSelectedAccount(account)
     setKeyLoading(true)
     setKeyManageModal(true)
     
@@ -425,41 +416,58 @@ const Account = () => {
 
   const handleAssignKey = async (keyId) => {
     try {
-      const response = await assignKey(selectedAccount.id, keyId)
+      // Tìm key được gán để lấy thông tin loại key
+      const keyToAssign = availableKeys.find(k => k.id === keyId);
       
-      // Check if backend provided slot update information
-      if (response.data && response.data.slotChangeMessage) {
-        messageApi.success(`Đã gán key thành công! ${response.data.slotChangeMessage}`)
-      } else {
-        messageApi.success('Đã gán key thành công!')
-      }
+      await assignKey(selectedAccount.id, keyId)
+      messageApi.success('Đã gán key thành công!')
       
       // Refresh account keys
       const keys = await getAccountKeys(selectedAccount.id)
       setAccountKeys(keys)
       
-      // Update selectedAccount with new slot information if available
-      if (response.data && response.data.updatedAccount) {
-        setSelectedAccount(prev => ({
-          ...prev,
-          assigned_keys: response.data.updatedAccount.assigned_keys,
-          max_key_slots: response.data.updatedAccount.max_key_slots,
-          key_type_restriction: response.data.updatedAccount.key_type_restriction
-        }))
+      // Refresh account list to update assigned_keys count with dynamic max slots
+      fetchAccounts({ timeFilter })
+      
+      // Update selectedAccount to reflect new assigned_keys count and max slots
+      let maxSlots = 3; // Default
+      
+      if (keyToAssign) {
+        // Dựa vào loại key vừa gán để xác định slot tối đa
+        const keyType = keyToAssign.key_type || keyToAssign.type;
+        if (keyType === 1 || keyType === '1' || keyType === '1key') {
+          maxSlots = 1;
+        } else if (keyType === 2 || keyType === '2' || keyType === '2key') {
+          maxSlots = 2;
+        } else if (keyType === 3 || keyType === '3' || keyType === '3key') {
+          maxSlots = 3;
+        }
+      } else if (keys && keys.length > 0) {
+        // Fallback: dùng loại key từ danh sách keys đã refresh
+        const firstKeyType = keys[0]?.key_type || keys[0]?.type;
+        if (firstKeyType === 1 || firstKeyType === '1' || firstKeyType === '1key') {
+          maxSlots = 1;
+        } else if (firstKeyType === 2 || firstKeyType === '2' || firstKeyType === '2key') {
+          maxSlots = 2;
+        } else if (firstKeyType === 3 || firstKeyType === '3' || firstKeyType === '3key') {
+          maxSlots = 3;
+        }
       }
       
-      // Refresh account list to update assigned_keys count
-      fetchAccounts({ timeFilter })
+      setSelectedAccount(prev => ({
+        ...prev,
+        assigned_keys: `${keys?.length || 1}/${maxSlots}`,
+        max_key_slots: maxSlots
+      }))
+      
+      console.log(`🎯 Updated account slot max to ${maxSlots} based on key type:`, keyToAssign?.key_type || keyToAssign?.type || 'unknown');
+      
     } catch (error) {
       console.error('Assign key error:', error)
       if (error.message.includes('not fully configured') || error.message.includes('503')) {
         messageApi.warning('Hệ thống quản lý key chưa được cấu hình đầy đủ. Vui lòng liên hệ quản trị viên.')
       } else if (error.message.includes('Account not found') || error.message.includes('404')) {
         messageApi.error('Không tìm thấy tài khoản hoặc key. Vui lòng thử lại.')
-      } else if (error.message.includes('Cannot mix different key types')) {
-        messageApi.error('Không thể gán key loại khác vào tài khoản đã có key. Mỗi tài khoản chỉ có thể sử dụng một loại key.')
-      } else if (error.message.includes('maximum number of')) {
-        messageApi.error(error.message)
       } else {
         messageApi.error(error.message || 'Lỗi khi gán key!')
       }
@@ -475,19 +483,33 @@ const Account = () => {
       const keys = await getAccountKeys(selectedAccount.id)
       setAccountKeys(keys)
       
-      // If no keys left, reset to default 3 slots
-      if (keys.length === 0) {
-        setSelectedAccount(prev => ({
-          ...prev,
-          assigned_keys: '0/3',
-          max_key_slots: 3,
-          key_type_restriction: null
-        }))
-        messageApi.info('Tài khoản đã hết key, slot đã được reset về mặc định 0/3')
-      }
-      
-      // Refresh account list to update assigned_keys count
+      // Refresh account list to update assigned_keys count with dynamic max slots
       fetchAccounts({ timeFilter })
+      
+      // Update selectedAccount to reflect new assigned_keys count
+      let maxSlots = 3; // Default max slots khi không có key
+      
+      if (keys && keys.length > 0) {
+        // Nếu còn key, dùng loại key đầu tiên để xác định slot
+        const firstKeyType = keys[0]?.key_type || keys[0]?.type;
+        if (firstKeyType === 1 || firstKeyType === '1' || firstKeyType === '1key') {
+          maxSlots = 1;
+        } else if (firstKeyType === 2 || firstKeyType === '2' || firstKeyType === '2key') {
+          maxSlots = 2;
+        } else if (firstKeyType === 3 || firstKeyType === '3' || firstKeyType === '3key') {
+          maxSlots = 3;
+        }
+      }
+      // Nếu không còn key nào, slot sẽ reset về 3 (default)
+      
+      setSelectedAccount(prev => ({
+        ...prev,
+        assigned_keys: `${keys?.length || 0}/${maxSlots}`,
+        max_key_slots: maxSlots
+      }))
+      
+      console.log(`🎯 Updated account slot max to ${maxSlots} after unassign, remaining keys:`, keys?.length || 0);
+      
     } catch (error) {
       console.error('Unassign key error:', error)
       if (error.message.includes('not fully configured') || error.message.includes('503')) {
@@ -1059,12 +1081,29 @@ const Account = () => {
               <div>
                 <h4 className="font-medium mb-4 flex items-center gap-2">
                   <KeyOutlined />
-                  Keys đã gán ({accountKeys.length}/{selectedAccount.max_key_slots || 3})
-                  {selectedAccount.key_type_restriction && (
-                    <Tag color="blue" size="small">
-                      {selectedAccount.key_type_restriction}
-                    </Tag>
-                  )}
+                  Keys đã gán ({accountKeys.length}/{(() => {
+                    // Tính toán slot tối đa dựa trên loại key đã gán hoặc từ backend
+                    let maxSlots = 3; // Mặc định là 3
+                    
+                    if (accountKeys.length > 0) {
+                      // Nếu đã có key, dùng loại key đầu tiên
+                      const firstKeyType = accountKeys[0]?.key_type || accountKeys[0]?.type;
+                      if (firstKeyType === 2 || firstKeyType === '2' || firstKeyType === '2key') {
+                        maxSlots = 2;
+                      } else if (firstKeyType === 1 || firstKeyType === '1' || firstKeyType === '1key') {
+                        maxSlots = 1;
+                      } else if (firstKeyType === 3 || firstKeyType === '3' || firstKeyType === '3key') {
+                        maxSlots = 3;
+                      }
+                    } else {
+                      // Nếu chưa có key, dùng thông tin từ backend (nếu có)
+                      if (selectedAccount?.max_key_slots) {
+                        maxSlots = selectedAccount.max_key_slots;
+                      }
+                    }
+                    
+                    return maxSlots;
+                  })()})
                 </h4>
                 {accountKeys.length > 0 ? (
                   <div className="space-y-2 mb-4">
@@ -1075,6 +1114,9 @@ const Account = () => {
                             {key.code}
                           </Tag>
                           <span className="text-sm text-gray-600">{key.group_name}</span>
+                          <span className="text-xs text-gray-400">
+                            Loại: {key.key_type || key.type} key/tài khoản
+                          </span>
                           <span className="text-xs text-gray-400">
                             Gán lúc: {dayjs(key.assigned_at).format('DD/MM/YYYY HH:mm')}
                           </span>
@@ -1098,69 +1140,124 @@ const Account = () => {
               </div>
 
               {/* Keys có sẵn để gán */}
-              {accountKeys.length < (selectedAccount.max_key_slots || 3) && (
-                <div>
-                  <h4 className="font-medium mb-4">Keys có sẵn để gán:</h4>
-                  {availableKeys.length > 0 ? (
-                    <div className="space-y-2">
-                      {availableKeys
-                        .filter(key => {
-                          // Kiểm tra key chưa được gán cho account này
-                          const notAssigned = !accountKeys.some(ak => ak.id === key.id);
-                          
-                          // Kiểm tra tương thích key type
-                          if (selectedAccount.key_type_restriction) {
-                            // Account đã có key type restriction, chỉ gán key cùng loại
-                            return notAssigned && key.key_type === selectedAccount.key_type_restriction;
-                          } else {
-                            // Account chưa có key, có thể gán bất kỳ loại key nào
-                            return notAssigned;
-                          }
-                        })
-                        .map(key => (
-                          <div key={key.id} className="flex items-center justify-between p-3 border rounded-lg">
-                            <div className="flex items-center gap-4">
-                              <Tag color={key.status === 'chờ' ? 'blue' : 'green'}>
-                                {key.code}
-                              </Tag>
-                              <span className="text-sm text-gray-600">{key.group_name}</span>
-                              <Tag color="purple" size="small">{key.key_type}</Tag>
-                              <span className="text-xs text-gray-400">Trạng thái: {key.status}</span>
+              {(() => {
+                // Tính toán slot tối đa dựa trên loại key đã gán hoặc từ backend
+                let maxSlots = 3; // Mặc định là 3
+                
+                if (accountKeys.length > 0) {
+                  // Nếu đã có key, dùng loại key đầu tiên
+                  const firstKeyType = accountKeys[0]?.key_type || accountKeys[0]?.type;
+                  if (firstKeyType === 1 || firstKeyType === '1' || firstKeyType === '1key') {
+                    maxSlots = 1;
+                  } else if (firstKeyType === 2 || firstKeyType === '2' || firstKeyType === '2key') {
+                    maxSlots = 2;
+                  } else if (firstKeyType === 3 || firstKeyType === '3' || firstKeyType === '3key') {
+                    maxSlots = 3;
+                  }
+                } else {
+                  // Nếu chưa có key, dùng thông tin từ backend (nếu có)
+                  if (selectedAccount?.max_key_slots) {
+                    maxSlots = selectedAccount.max_key_slots;
+                  }
+                }
+                
+                return accountKeys.length < maxSlots && (
+                  <div>
+                    <h4 className="font-medium mb-4">Keys có sẵn để gán:</h4>
+                    {availableKeys.length > 0 ? (
+                      <div className="space-y-2">
+                        {availableKeys
+                          .filter(key => {
+                            // Không hiển thị key đã được gán
+                            if (accountKeys.some(ak => ak.id === key.id)) return false;
+                            
+                            // Nếu đã có key được gán, chỉ cho phép gán key cùng loại
+                            if (accountKeys.length > 0) {
+                              const existingKeyType = accountKeys[0]?.key_type || accountKeys[0]?.type;
+                              const currentKeyType = key.key_type || key.type;
+                              
+                              // Normalize key types để so sánh
+                              const normalizeKeyType = (type) => {
+                                if (type === 1 || type === '1' || type === '1key') return '1key';
+                                if (type === 2 || type === '2' || type === '2key') return '2key';
+                                if (type === 3 || type === '3' || type === '3key') return '3key';
+                                return type;
+                              };
+                              
+                              return normalizeKeyType(existingKeyType) === normalizeKeyType(currentKeyType);
+                            }
+                            
+                            return true;
+                          })
+                          .map(key => (
+                            <div key={key.id} className="flex items-center justify-between p-3 border rounded-lg">
+                              <div className="flex items-center gap-4">
+                                <Tag color={key.status === 'chờ' ? 'blue' : 'green'}>
+                                  {key.code}
+                                </Tag>
+                                <span className="text-sm text-gray-600">{key.group_name}</span>
+                                <span className="text-xs text-gray-400">
+                                  Loại: {key.key_type || key.type} key/tài khoản | Trạng thái: {key.status}
+                                </span>
+                                {accountKeys.length === 0 && (
+                                  <span className="text-xs text-blue-600 font-medium">
+                                    {key.key_type === '1key' || key.key_type === 1 || key.type === '1key' || key.type === 1 ? 
+                                      '→ Slot sẽ thành 1/1' :
+                                     key.key_type === '2key' || key.key_type === 2 || key.type === '2key' || key.type === 2 ? 
+                                      '→ Slot sẽ thành X/2' :
+                                      '→ Slot giữ nguyên 3/3'
+                                    }
+                                  </span>
+                                )}
+                              </div>
+                              <Button 
+                                size="small" 
+                                type="primary"
+                                onClick={() => handleAssignKey(key.id)}
+                              >
+                                Gán Key
+                              </Button>
                             </div>
-                            <Button 
-                              size="small" 
-                              type="primary"
-                              onClick={() => handleAssignKey(key.id)}
-                              disabled={
-                                // Disable nếu key type không tương thích
-                                selectedAccount.key_type_restriction && 
-                                key.key_type !== selectedAccount.key_type_restriction
-                              }
-                            >
-                              Gán Key
-                            </Button>
-                          </div>
-                        ))}
-                    </div>
-                  ) : (
-                    <div className="text-center py-8 text-gray-500">
-                      {selectedAccount.key_type_restriction ? 
-                        `Không có key loại ${selectedAccount.key_type_restriction} nào có sẵn` :
-                        'Không có key nào có sẵn'
-                      }
-                    </div>
-                  )}
-                </div>
-              )}
+                          ))}
+                      </div>
+                    ) : (
+                      <div className="text-center py-8 text-gray-500">
+                        Không có key nào có sẵn
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
-              {accountKeys.length >= (selectedAccount.max_key_slots || 3) && (
-                <Alert 
-                  message="Đã đạt giới hạn tối đa" 
-                  description={`Tài khoản này đã được gán tối đa ${selectedAccount.max_key_slots || 3} keys${selectedAccount.key_type_restriction ? ` loại ${selectedAccount.key_type_restriction}` : ''}. Vui lòng bỏ gán một số key trước khi gán key mới.`}
-                  type="warning" 
-                  showIcon 
-                />
-              )}
+              {(() => {
+                // Tính toán slot tối đa để hiển thị thông báo
+                let maxSlots = 3;
+                
+                if (accountKeys.length > 0) {
+                  const firstKeyType = accountKeys[0]?.key_type || accountKeys[0]?.type;
+                  if (firstKeyType === 1 || firstKeyType === '1' || firstKeyType === '1key') {
+                    maxSlots = 1;
+                  } else if (firstKeyType === 2 || firstKeyType === '2' || firstKeyType === '2key') {
+                    maxSlots = 2;
+                  } else if (firstKeyType === 3 || firstKeyType === '3' || firstKeyType === '3key') {
+                    maxSlots = 3;
+                  }
+                } else {
+                  // Nếu chưa có key, dùng thông tin từ backend (nếu có)
+                  if (selectedAccount?.max_key_slots) {
+                    maxSlots = selectedAccount.max_key_slots;
+                  }
+                }
+                
+                return accountKeys.length >= maxSlots && (
+                  <Alert 
+                    message="Đã đạt giới hạn tối đa" 
+                    description={`Tài khoản này đã được gán tối đa ${maxSlots} keys${accountKeys.length > 0 ? ` (loại ${accountKeys[0]?.key_type || accountKeys[0]?.type} key/tài khoản)` : ''}. Vui lòng bỏ gán một số key trước khi gán key mới.`}
+                    type="warning" 
+                    showIcon 
+                  />
+                );
+              })()}
             </Spin>
           </div>
         )}
