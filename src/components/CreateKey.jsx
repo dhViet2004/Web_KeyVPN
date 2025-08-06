@@ -112,14 +112,44 @@ const CreateKey = () => {
     }
   }, [activeGroup, fetchKeys])
 
-  // Manual refresh function
+  // Manual refresh function với deep refresh
   const handleRefresh = async () => {
     try {
-      await fetchAllKeys()
-      await fetchKeys(activeGroup)
-      messageApi.success('Đã cập nhật danh sách key!')
+      messageApi.info('Đang làm mới toàn bộ dữ liệu...');
+      
+      // Force refresh tất cả dữ liệu
+      await Promise.all([
+        fetchAllKeys(),
+        fetchKeys(activeGroup)
+      ]);
+      
+      // Force re-render table
+      setTableKey(prev => prev + 1);
+      
+      console.log('🔄 Full data refresh completed');
+      messageApi.success('Đã cập nhật danh sách key và thông tin tài khoản!')
     } catch (error) {
+      console.error('Full refresh error:', error);
       messageApi.error('Lỗi cập nhật: ' + (error.message || error))
+    }
+  }
+
+  // Hàm force sync dữ liệu khi phát hiện inconsistency
+  const handleDataSync = async () => {
+    try {
+      console.log('🔄 Syncing data due to potential inconsistency...');
+      
+      await Promise.all([
+        fetchAllKeys(),
+        fetchKeys(activeGroup)
+      ]);
+      
+      // Force re-render tất cả components
+      setTableKey(prev => prev + 1);
+      
+      console.log('✅ Data sync completed');
+    } catch (error) {
+      console.error('Data sync error:', error);
     }
   }
 
@@ -242,15 +272,26 @@ const CreateKey = () => {
       const keysToDelete = selectedKeysForDelete.length > 0 ? selectedKeysForDelete : filteredKeysForDelete
       const deletedCount = keysToDelete.length
       
-      // Gọi API để xóa từng key
+      console.log(`🗑️ Bulk deleting ${deletedCount} keys:`, keysToDelete.map(k => k.code));
+      
+      // Gọi API để xóa từng key (backend sẽ tự động xóa các record liên quan trong account_keys)
       for (const key of keysToDelete) {
-        await deleteKey(key.id)
+        try {
+          await deleteKey(key.id)
+          console.log(`✅ Deleted key ${key.code} (ID: ${key.id})`);
+        } catch (keyError) {
+          console.error(`❌ Failed to delete key ${key.code}:`, keyError);
+          // Tiếp tục xóa các key khác
+        }
       }
       
-      // Refresh both current group keys and all keys
-      await fetchKeys(activeGroup)
-      await fetchAllKeys()
+      // Refresh tất cả dữ liệu để đảm bảo đồng bộ
+      await Promise.all([
+        fetchKeys(activeGroup),
+        fetchAllKeys()
+      ]);
       
+      console.log(`✅ Bulk delete completed and data refreshed`);
       messageApi.success(`Đã xóa ${deletedCount} key!`)
       setIsFilterModalOpen(false)
       setSelectedKeyGroup('')
@@ -259,7 +300,19 @@ const CreateKey = () => {
       setSelectedKeysForDelete([])
       setSelectAllForDelete(false)
     } catch (error) {
+      console.error('Bulk delete error:', error);
       messageApi.error(`Lỗi xóa key: ${error.message}`)
+      
+      // Refresh dữ liệu ngay cả khi có lỗi để đảm bảo UI sync với database
+      try {
+        await Promise.all([
+          fetchKeys(activeGroup),
+          fetchAllKeys()
+        ]);
+        console.log('🔄 Data refreshed after bulk delete error');
+      } catch (refreshError) {
+        console.error('Failed to refresh data after bulk delete error:', refreshError);
+      }
     }
   }
 
@@ -330,12 +383,37 @@ const CreateKey = () => {
   }
   const handleDeleteAccount = async id => {
     try {
+      // Tìm key sẽ bị xóa để log thông tin
+      const keyToDelete = keys.find(k => k.id === id);
+      const keyCode = keyToDelete?.code || id;
+      
+      console.log(`🗑️ Deleting key ${keyCode} (ID: ${id})`);
+      
+      // Gọi API xóa key (backend sẽ tự động xóa các record liên quan trong account_keys)
       await deleteKey(id);
-      await fetchKeys(activeGroup);
-      await fetchAllKeys();
-      messageApi.success('Đã xóa key thành công!');
+      
+      // Refresh tất cả dữ liệu để đảm bảo đồng bộ
+      await Promise.all([
+        fetchKeys(activeGroup),
+        fetchAllKeys()
+      ]);
+      
+      console.log(`✅ Successfully deleted key ${keyCode} and refreshed data`);
+      messageApi.success(`Đã xóa key ${keyCode} thành công!`);
     } catch (error) {
+      console.error('Error deleting key:', error);
       messageApi.error('Lỗi xóa key: ' + (error.message || error));
+      
+      // Refresh dữ liệu ngay cả khi có lỗi để đảm bảo UI sync với database
+      try {
+        await Promise.all([
+          fetchKeys(activeGroup),
+          fetchAllKeys()
+        ]);
+        console.log('🔄 Data refreshed after delete error');
+      } catch (refreshError) {
+        console.error('Failed to refresh data after delete error:', refreshError);
+      }
     }
   }
 
@@ -394,7 +472,15 @@ const CreateKey = () => {
         
         const accountsWithSlots = response.data.accounts.filter(account => {
           // Map backend field names to frontend expected names
-          const currentKeys = account.key_count || account.current_key_count || 0; // Backend uses 'key_count'
+          // CHỈ đếm những key có is_active = true từ account_keys
+          let currentKeys = account.key_count || account.current_key_count || 0;
+          
+          // If we have detailed assigned_keys data, count only active keys
+          if (account.assigned_keys && Array.isArray(account.assigned_keys)) {
+            currentKeys = account.assigned_keys.filter(key => key.is_active === true).length;
+            console.log(`🔍 Account ${account.username} - Active keys count from detailed data: ${currentKeys}`);
+          }
+          
           const currentMaxSlots = account.max_key_slots || account.max_keys || 3; // Backend might use 'max_keys'
           
           console.log(`🔍 Account ${account.username}:`, {
@@ -405,16 +491,42 @@ const CreateKey = () => {
             dominant_key_type: account.dominant_key_type,
             assigned_key_codes: account.assigned_key_codes,
             assigned_keys: account.assigned_keys,
-            currentKeys,
+            activeKeysCount: currentKeys, // Updated to show only active keys
             currentMaxSlots
           })
           
-          // First check: Make sure this account doesn't already have this specific key
+          // First check: Make sure this account doesn't already have this specific ACTIVE key
           if (account.assigned_key_codes && typeof account.assigned_key_codes === 'string') {
             const assignedCodes = account.assigned_key_codes.split(', ').filter(code => code.trim());
             if (assignedCodes.includes(keyToAssign?.code)) {
-              console.log(`❌ Account ${account.username} already has key ${keyToAssign?.code}, skipping`);
+              console.log(`❌ Account ${account.username} already has ACTIVE key ${keyToAssign?.code}, skipping`);
               return false;
+            }
+          }
+          
+          // Additional check: If we have detailed assigned_keys data, check is_active status
+          if (account.assigned_keys && Array.isArray(account.assigned_keys)) {
+            const hasActiveKey = account.assigned_keys.some(assignedKey => {
+              // Check if this specific key is already actively assigned
+              return (assignedKey.key_id === keyToAssign?.id || 
+                     assignedKey.id === keyToAssign?.id ||
+                     assignedKey.code === keyToAssign?.code) &&
+                     assignedKey.is_active === true; // Only check ACTIVE assignments
+            });
+            if (hasActiveKey) {
+              console.log(`❌ Account ${account.username} already has ACTIVE key ${keyToAssign?.code} (detailed check), skipping`);
+              return false;
+            }
+            
+            // Check for inactive assignments (can be reassigned)
+            const hasInactiveKey = account.assigned_keys.some(assignedKey => {
+              return (assignedKey.key_id === keyToAssign?.id || 
+                     assignedKey.id === keyToAssign?.id ||
+                     assignedKey.code === keyToAssign?.code) &&
+                     assignedKey.is_active === false; // Inactive assignment
+            });
+            if (hasInactiveKey) {
+              console.log(`✅ Account ${account.username} has INACTIVE key ${keyToAssign?.code}, can be reassigned`);
             }
           }
           
@@ -504,7 +616,11 @@ const CreateKey = () => {
           // Add computed fields for display with projected slots
           projected_max_slots: (() => {
             // Calculate projected max slots based on key type being assigned and current account state
-            const currentKeys = account.key_count || account.current_key_count || 0;
+            // Use active keys count like in the filter logic
+            let currentKeys = account.key_count || account.current_key_count || 0;
+            if (account.assigned_keys && Array.isArray(account.assigned_keys)) {
+              currentKeys = account.assigned_keys.filter(key => key.is_active === true).length;
+            }
             
             if (currentKeys === 0) {
               // Tài khoản trống: slot tối đa được xác định bởi key type sẽ gán
@@ -530,14 +646,19 @@ const CreateKey = () => {
             }
           })(),
           available_slots: (() => {
-            const currentKeys = account.key_count || account.current_key_count || 0;
+            // Calculate active keys count (same logic as above)
+            let actualCurrentKeys = account.key_count || account.current_key_count || 0;
+            if (account.assigned_keys && Array.isArray(account.assigned_keys)) {
+              actualCurrentKeys = account.assigned_keys.filter(key => key.is_active === true).length;
+            }
             
-            // Parse current key count from assigned_keys if available
-            let actualCurrentKeys = currentKeys;
-            if (account.assigned_keys && typeof account.assigned_keys === 'string' && account.assigned_keys.includes('/')) {
-              const parts = account.assigned_keys.split('/');
-              if (parts.length === 2 && !isNaN(parts[0])) {
-                actualCurrentKeys = parseInt(parts[0]);
+            // Parse current key count from assigned_keys string format if available as fallback
+            if (!account.assigned_keys || !Array.isArray(account.assigned_keys)) {
+              if (account.assigned_keys && typeof account.assigned_keys === 'string' && account.assigned_keys.includes('/')) {
+                const parts = account.assigned_keys.split('/');
+                if (parts.length === 2 && !isNaN(parts[0])) {
+                  actualCurrentKeys = parseInt(parts[0]);
+                }
               }
             }
             
@@ -688,8 +809,11 @@ const CreateKey = () => {
           response: response.data
         })
         
-        // Hiển thị message thành công với thông tin slot change
+        // Hiển thị message thành công với thông tin slot change và reactivation
         let successMessage = `Đã gán key ${currentKeyForAssign.code} vào tài khoản thành công!`;
+        if (response.message && response.message.includes('reactivated')) {
+          successMessage = `Key ${currentKeyForAssign.code} đã được kích hoạt lại và gán cho tài khoản thành công!`;
+        }
         if (response.data && response.data.slotChangeMessage) {
           successMessage += ` ${response.data.slotChangeMessage}`;
         }
@@ -708,18 +832,17 @@ const CreateKey = () => {
             await fetchKeys(activeGroup)
             await fetchAllKeys()
             
-            // Optionally refresh accounts list để có dữ liệu chính xác nhất từ server
-            // Nhưng không làm gián đoạn UX vì local state đã được cập nhật
+            // Refresh accounts list để có dữ liệu chính xác nhất từ server
             await fetchAccountsWithSlots(currentKeyForAssign)
             
             // Force re-render sau khi refresh từ server
             setTableKey(prev => prev + 1)
             
-            console.log('🔄 Background refresh completed')
+            console.log('🔄 Background refresh completed - key list and account data updated')
           } catch (error) {
             console.error('Background refresh error:', error)
           }
-        }, 1000)
+        }, 500) // Giảm delay để cập nhật nhanh hơn
         
         // Không đóng modal để user có thể thấy thay đổi và tiếp tục gán key khác nếu muốn
         // handleAssignCancel()
@@ -734,19 +857,18 @@ const CreateKey = () => {
           keyType: currentKeyForAssign.key_type || currentKeyForAssign.type,
           accountId: selectedAccountId,
           response: response,
-          error: errorMessage
+          error: errorMessage,
+          timestamp: new Date().toISOString()
         });
         
         messageApi.error(`Lỗi gán key: ${errorMessage}`)
         
-        // Refresh dữ liệu nếu có lỗi duplicate để đảm bảo UI sync với database
-        if (errorMessage.includes('already assigned') || errorMessage.includes('refresh') || errorMessage.includes('slot')) {
+        // Refresh dữ liệu nếu có lỗi duplicate hoặc constraint để đảm bảo UI sync với database
+        if (errorMessage.includes('already assigned') || errorMessage.includes('refresh') || errorMessage.includes('slot') || errorMessage.includes('database record conflict')) {
           console.log('🔄 Refreshing data due to assignment conflict...')
           try {
-            await fetchKeys(activeGroup)
-            await fetchAllKeys()
-            await fetchAccountsWithSlots(currentKeyForAssign)
-            setTableKey(prev => prev + 1)
+            await handleDataSync(); // Sử dụng function đồng bộ dữ liệu
+            console.log('✅ Data refreshed after assignment conflict')
           } catch (refreshError) {
             console.error('Failed to refresh data after error:', refreshError)
           }
@@ -765,9 +887,21 @@ const CreateKey = () => {
       } else if (error.message.includes('Account not found')) {
         errorMessage = 'Tài khoản không tồn tại.'
         shouldRefresh = true
-      } else if (error.message.includes('Duplicate entry') || error.message.includes('already assigned')) {
-        errorMessage = `Key ${currentKeyForAssign.code} đã được gán cho tài khoản này trước đó. Dữ liệu đã được làm mới.`
+      } else if (error.message.includes('Duplicate entry') || error.message.includes('already assigned') || error.message.includes('database record conflict')) {
+        errorMessage = `Key ${currentKeyForAssign.code} có xung đột dữ liệu. Có thể key này đã từng được gán nhưng hiện đang inactive. Đang làm mới dữ liệu để thử kích hoạt lại...`
         shouldRefresh = true
+        
+        // Đối với lỗi constraint, thử refresh ngay lập tức để có thể reactivate
+        console.log('🔄 Database constraint detected, attempting immediate refresh for reactivation...')
+        setTimeout(async () => {
+          try {
+            await handleDataSync();
+            messageApi.info('Dữ liệu đã được làm mới. Vui lòng thử gán key lại.');
+          } catch (refreshError) {
+            console.error('Failed to refresh after constraint error:', refreshError);
+          }
+        }, 1000);
+        
       } else if (error.message.includes('maximum number of keys')) {
         errorMessage = 'Tài khoản đã đạt số lượng key tối đa.'
         shouldRefresh = true
@@ -789,10 +923,9 @@ const CreateKey = () => {
       if (shouldRefresh) {
         console.log('🔄 Refreshing data due to assign error...')
         try {
-          await fetchKeys(activeGroup)
-          await fetchAllKeys()
-          await fetchAccountsWithSlots(currentKeyForAssign)
-          setTableKey(prev => prev + 1)
+          await handleDataSync(); // Sử dụng function đồng bộ dữ liệu
+          await fetchAccountsWithSlots(currentKeyForAssign); // Cũng refresh account list
+          console.log('✅ Data refreshed after assign error')
         } catch (refreshError) {
           console.error('Failed to refresh data after error:', refreshError)
         }
@@ -848,20 +981,39 @@ const CreateKey = () => {
         
         const accountsWithSlots = response.data.accounts.filter(account => {
           // Map backend field names to frontend expected names
-          const currentKeys = account.key_count || account.current_key_count || 0; // Backend uses 'key_count'
+          // CHỈ đếm những key có is_active = true từ account_keys cho transfer
+          let currentKeys = account.key_count || account.current_key_count || 0;
+          
+          // If we have detailed assigned_keys data, count only active keys
+          if (account.assigned_keys && Array.isArray(account.assigned_keys)) {
+            currentKeys = account.assigned_keys.filter(key => key.is_active === true).length;
+            console.log(`🔍 Transfer Account ${account.username} - Active keys count: ${currentKeys}`);
+          }
+          
           const currentMaxSlots = account.max_key_slots || account.max_keys || 3; // Backend might use 'max_keys'
           
           console.log(`� Transfer Account ${account.username}: key_count=${account.key_count}, current_key_count=${account.current_key_count}, max_keys=${account.max_keys}, dominant_key_type=${account.dominant_key_type}`)
           
-          // First check: Make sure this account doesn't already have this specific key
+          // First check: Make sure this account doesn't already have this specific ACTIVE key
           if (account.assigned_keys && Array.isArray(account.assigned_keys)) {
-            const hasThisKey = account.assigned_keys.some(assignedKey => {
-              return assignedKey.key_id === keyToTransfer?.id || 
+            const hasActiveKey = account.assigned_keys.some(assignedKey => {
+              // Check if this specific key is already actively assigned
+              return (assignedKey.key_id === keyToTransfer?.id || 
                      assignedKey.id === keyToTransfer?.id ||
-                     assignedKey.code === keyToTransfer?.code;
+                     assignedKey.code === keyToTransfer?.code) &&
+                     assignedKey.is_active === true; // Only check ACTIVE assignments
             });
-            if (hasThisKey) {
-              console.log(`❌ Transfer: Account ${account.username} already has key ${keyToTransfer?.code || keyToTransfer?.id}, skipping`);
+            if (hasActiveKey) {
+              console.log(`❌ Transfer: Account ${account.username} already has ACTIVE key ${keyToTransfer?.code || keyToTransfer?.id}, skipping`);
+              return false;
+            }
+          }
+          
+          // Additional check with assigned_key_codes string (should only contain active keys)
+          if (account.assigned_key_codes && typeof account.assigned_key_codes === 'string') {
+            const assignedCodes = account.assigned_key_codes.split(', ').filter(code => code.trim());
+            if (assignedCodes.includes(keyToTransfer?.code)) {
+              console.log(`❌ Transfer: Account ${account.username} already has ACTIVE key ${keyToTransfer?.code} (string check), skipping`);
               return false;
             }
           }
@@ -923,7 +1075,11 @@ const CreateKey = () => {
           // Add computed fields for display with projected slots
           projected_max_slots: (() => {
             // Calculate projected max slots based on key type being transferred and current account state
-            const currentKeys = account.key_count || account.current_key_count || 0;
+            // Use active keys count like in the filter logic
+            let currentKeys = account.key_count || account.current_key_count || 0;
+            if (account.assigned_keys && Array.isArray(account.assigned_keys)) {
+              currentKeys = account.assigned_keys.filter(key => key.is_active === true).length;
+            }
             
             if (currentKeys === 0) {
               // Tài khoản trống: slot tối đa được xác định bởi key type sẽ chuyển
@@ -942,19 +1098,23 @@ const CreateKey = () => {
             }
           })(),
           available_slots: (() => {
-            const currentKeys = account.key_count || account.current_key_count || 0;
+            // Use the same active keys calculation for consistency
+            let availableCurrentKeys = account.key_count || account.current_key_count || 0;
+            if (account.assigned_keys && Array.isArray(account.assigned_keys)) {
+              availableCurrentKeys = account.assigned_keys.filter(key => key.is_active === true).length;
+            }
             
             // Calculate available slots based on current account state and key type being transferred
             if (keyType === '1key') {
               // 1key: Chỉ tài khoản trống, sau khi chuyển sẽ là 1/1 (full)
-              return currentKeys === 0 ? 1 : 0;
+              return availableCurrentKeys === 0 ? 1 : 0;
               
             } else if (keyType === '2key') {
               // 2key: Tài khoản trống hoặc đã có 1x2key
-              if (currentKeys === 0) {
+              if (availableCurrentKeys === 0) {
                 // Tài khoản trống, sau khi chuyển key đầu tiên sẽ là 1/2
                 return 2;
-              } else if (currentKeys === 1 && account.dominant_key_type === '2key') {
+              } else if (availableCurrentKeys === 1 && account.dominant_key_type === '2key') {
                 // Đã có 1x2key, có thể chuyển thêm 1 key nữa
                 return 1;
               } else {
@@ -964,14 +1124,14 @@ const CreateKey = () => {
               
             } else if (keyType === '3key') {
               // 3key: Tài khoản trống hoặc đã có key loại 3key
-              if (currentKeys === 0) {
+              if (availableCurrentKeys === 0) {
                 // Tài khoản trống, sau khi chuyển key đầu tiên sẽ là 1/3
                 return 3;
               } else {
                 const dominantKeyType = account.dominant_key_type;
                 if (dominantKeyType === '3key') {
                   // Tài khoản có key loại 3key, tính slot còn lại
-                  return Math.max(0, 3 - currentKeys);
+                  return Math.max(0, 3 - availableCurrentKeys);
                 } else {
                   // Tài khoản có key loại khác, không thể chuyển 3key
                   return 0;
@@ -981,7 +1141,7 @@ const CreateKey = () => {
             } else {
               // Default fallback
               const projectedMax = account.max_keys || account.max_key_slots || 3;
-              return Math.max(0, projectedMax - currentKeys);
+              return Math.max(0, projectedMax - availableCurrentKeys);
             }
           })(),
           can_accept_key_type: true // Already filtered for compatibility
@@ -1052,8 +1212,12 @@ const CreateKey = () => {
           )
           
           if (response.success) {
-            await fetchKeys(activeGroup)
-            await fetchAllKeys()
+            // Refresh dữ liệu ngay lập tức
+            await Promise.all([
+              fetchKeys(activeGroup),
+              fetchAllKeys()
+            ]);
+            console.log(`✅ Successfully transferred key ${currentKeyForTransfer.code} from account ${currentAccountId} to ${selectedTransferAccountId}`);
             messageApi.success(`Đã chuyển key ${currentKeyForTransfer.code} sang tài khoản mới thành công!`)
             handleTransferCancel()
             return
@@ -1072,8 +1236,12 @@ const CreateKey = () => {
             const assignResponse = await accountsAPI.assignKey(selectedTransferAccountId, currentKeyForTransfer.id)
             
             if (assignResponse.success) {
-              await fetchKeys(activeGroup)
-              await fetchAllKeys()
+              // Refresh dữ liệu sau khi unassign/assign thành công
+              await Promise.all([
+                fetchKeys(activeGroup),
+                fetchAllKeys()
+              ]);
+              console.log(`✅ Successfully transferred key ${currentKeyForTransfer.code} via unassign/assign from account ${currentAccountId} to ${selectedTransferAccountId}`);
               messageApi.success(`Đã chuyển key ${currentKeyForTransfer.code} sang tài khoản mới thành công!`)
               handleTransferCancel()
               return
@@ -1097,8 +1265,12 @@ const CreateKey = () => {
           const response = await accountsAPI.assignKey(selectedTransferAccountId, currentKeyForTransfer.id)
           
           if (response.success) {
-            await fetchKeys(activeGroup)
-            await fetchAllKeys()
+            // Refresh dữ liệu sau khi gán trực tiếp thành công
+            await Promise.all([
+              fetchKeys(activeGroup),
+              fetchAllKeys()
+            ]);
+            console.log(`✅ Successfully assigned key ${currentKeyForTransfer.code} directly to account ${selectedTransferAccountId}`);
             messageApi.success(`Đã gán key ${currentKeyForTransfer.code} vào tài khoản thành công!`)
             handleTransferCancel()
             return
@@ -1131,6 +1303,18 @@ const CreateKey = () => {
       }
       
       messageApi.error(errorMessage)
+      
+      // Refresh dữ liệu ngay cả khi có lỗi để đảm bảo UI sync với database
+      try {
+        await Promise.all([
+          fetchKeys(activeGroup),
+          fetchAllKeys()
+        ]);
+        console.log('🔄 Data refreshed after transfer error');
+      } catch (refreshError) {
+        console.error('Failed to refresh data after transfer error:', refreshError);
+      }
+      
       handleTransferCancel()
     }
   }
@@ -1168,7 +1352,9 @@ const CreateKey = () => {
         k.assigned_accounts.length) : 
       (k.current_assignments || 0), // Use current_assignments from query or fallback to 0
     maxKeysPerAccount: k.max_keys_per_account || 2, // New field for display
-    customer: k.customer_name || k.customer || '' // Fallback to empty string
+    customer: k.customer_name || k.customer || '', // Fallback to empty string
+    // Map account_details từ các field có thể có từ backend
+    account_details: k.account_details || k.assigned_account_details || k.accounts || null
   }));
 
   // Tìm kiếm
@@ -1197,16 +1383,46 @@ const CreateKey = () => {
       key: 'account_details',
       width: 200,
       render: (account_details, record) => {
+        // Debug log để kiểm tra dữ liệu nhận được - chỉ log khi có vấn đề
+        if (record.status === 'đang hoạt động' && (!account_details || (Array.isArray(account_details) && account_details.length === 0))) {
+          console.warn('⚠️ Active key without account details:', {
+            keyCode: record.code,
+            keyId: record.id,
+            status: record.status,
+            account_details,
+            assigned_account_usernames: record.assigned_account_usernames,
+            assigned_accounts: record.assigned_accounts,
+            assigned_account_details: record.assigned_account_details,
+            accounts: record.accounts,
+            rawRecord: record
+          });
+        }
+        
         try {
           let accounts = [];
           
-          // First try to use account_details from the new query
+          // Thử parse từ account_details trước (từ query JOIN)
           if (account_details && typeof account_details === 'string') {
-            accounts = JSON.parse(account_details);
+            try {
+              accounts = JSON.parse(account_details);
+            } catch {
+              console.log('Could not parse account_details as JSON:', account_details);
+              // Có thể là string đơn giản, chuyển thành array
+              accounts = [{ username: account_details }];
+            }
           } else if (Array.isArray(account_details)) {
             accounts = account_details;
-          } else if (record.assigned_accounts) {
-            // Fallback to assigned_accounts if account_details is not available
+          } 
+          // Fallback: thử từ các field khác
+          else if (record.assigned_account_usernames) {
+            // Nếu backend trả về danh sách username trực tiếp
+            const usernames = typeof record.assigned_account_usernames === 'string' 
+              ? record.assigned_account_usernames.split(',').map(u => u.trim())
+              : record.assigned_account_usernames;
+            accounts = usernames.map(username => ({ username }));
+          }
+          else if (record.assigned_accounts) {
+            // Fallback cũ - chỉ có ID
             if (typeof record.assigned_accounts === 'string') {
               const assignedIds = JSON.parse(record.assigned_accounts || '[]');
               accounts = assignedIds.map(id => ({ account_id: id, username: `ID: ${id}` }));
@@ -1219,28 +1435,28 @@ const CreateKey = () => {
             return <span className="text-gray-400 italic">Chưa gán</span>;
           }
           
-          // Display account usernames (simplified version)
+          // Display account usernames
           return (
             <div className="flex flex-wrap gap-1">
               {accounts.map((account, index) => (
                 <span 
-                  key={index}
+                  key={account.account_id || account.id || index}
                   className={`px-2 py-1 rounded text-xs ${
-                    account.status === 'active' 
-                      ? 'bg-green-100 text-green-700' 
-                      : account.status === 'suspended'
-                      ? 'bg-red-100 text-red-700'
+                    account.is_active === false || account.status === 'suspended'
+                      ? 'bg-red-100 text-red-700' 
+                      : account.is_active === true || account.status === 'active'
+                      ? 'bg-green-100 text-green-700'
                       : 'bg-blue-100 text-blue-700'
                   }`}
-                  title={`ID: ${account.account_id} | Trạng thái: ${account.status || 'unknown'}`}
+                  title={`${account.username || 'N/A'} | ID: ${account.account_id || account.id || 'N/A'} | Trạng thái: ${account.is_active ? 'Hoạt động' : 'Tạm dừng'}`}
                 >
-                  {account.username || `ID: ${account.account_id || account}`}
+                  {account.username || `ID: ${account.account_id || account.id || 'N/A'}`}
                 </span>
               ))}
             </div>
           );
         } catch (error) {
-          console.error('Error parsing account_details:', error);
+          console.error('Error parsing account_details:', error, 'Data:', account_details);
           return <span className="text-red-400 italic">Lỗi dữ liệu</span>;
         }
       }
@@ -1313,6 +1529,7 @@ const CreateKey = () => {
               </div>
               <div className="overflow-x-auto rounded-xl shadow-sm">
                 <Table
+                  key={tableKey} // Force re-render when tableKey changes
                   columns={columns}
                   dataSource={filteredKeys}
                   rowKey="id"

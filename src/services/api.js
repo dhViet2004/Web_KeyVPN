@@ -45,10 +45,13 @@ class ApiClient {
       const data = await response.json();
 
       if (!response.ok) {
-        // Handle authentication errors
-        if (response.status === 401) {
+        // Handle authentication errors - both 401 and 403
+        if (response.status === 401 || response.status === 403) {
+          console.warn(`Authentication failed (${response.status}): ${data.message || 'Token invalid'}`);
           this.setToken(null);
+          // Force redirect to login page
           window.location.href = '/admin-login';
+          throw new Error('Session expired. Please login again.');
         }
         throw new Error(data.message || `HTTP error! status: ${response.status}`);
       }

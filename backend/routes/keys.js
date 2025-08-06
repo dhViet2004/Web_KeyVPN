@@ -3,6 +3,7 @@ const { body, validationResult, query } = require('express-validator');
 const { executeQuery } = require('../config/database');
 const { authenticateToken } = require('./auth');
 const { createBulkKeys, getKeysStats } = require('../utils/keyHelpers');
+const { cleanupAccountKeys, cleanupKeyAssignments } = require('../utils/cleanupHelpers');
 
 const router = express.Router();
 
@@ -239,6 +240,19 @@ router.put('/:id/status', [
     const { id } = req.params;
     const { status } = req.body;
 
+    // Clean up account_keys assignments when setting key to inactive status
+    let cleanupResult = null;
+    if (status === 'hết hạn') {
+      console.log(`🧹 Cleaning up assignments for key ${id} (setting to expired)...`);
+      cleanupResult = await cleanupKeyAssignments(id);
+      
+      if (cleanupResult.success) {
+        console.log(`✅ Cleaned up ${cleanupResult.affectedRows} assignments for key ${id}`);
+      } else {
+        console.warn(`⚠️ Cleanup failed for key ${id}:`, cleanupResult.error);
+      }
+    }
+
     const result = await executeQuery(
       'UPDATE vpn_keys SET status = ?, updated_at = NOW() WHERE id = ?',
       [status, id]
@@ -258,10 +272,19 @@ router.put('/:id/status', [
       });
     }
 
-    res.json({
+    const response = {
       success: true,
       message: 'Key status updated successfully'
-    });
+    };
+
+    // Add cleanup info if cleanup was performed
+    if (cleanupResult) {
+      response.cleanup = {
+        assignmentsRemoved: cleanupResult.success ? cleanupResult.affectedRows : 0
+      };
+    }
+
+    res.json(response);
 
   } catch (error) {
     console.error('Update key status error:', error);
@@ -278,6 +301,17 @@ router.put('/:id/status', [
 router.post('/reset/:id', async (req, res) => {
   try {
     const { id } = req.params;
+
+    // Clean up account_keys assignments BEFORE resetting the key
+    console.log(`🧹 Cleaning up assignments for key ${id} before reset...`);
+    const cleanupResult = await cleanupKeyAssignments(id);
+    
+    if (cleanupResult.success) {
+      console.log(`✅ Cleaned up ${cleanupResult.affectedRows} assignments for key ${id}`);
+    } else {
+      console.warn(`⚠️ Cleanup failed for key ${id}:`, cleanupResult.error);
+      // Continue with reset even if cleanup fails
+    }
 
     const result = await executeQuery(
       'UPDATE vpn_keys SET status = "chờ", updated_at = NOW() WHERE id = ?',
@@ -300,7 +334,10 @@ router.post('/reset/:id', async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Key reset successfully'
+      message: 'Key reset successfully',
+      cleanup: {
+        assignmentsRemoved: cleanupResult.success ? cleanupResult.affectedRows : 0
+      }
     });
 
   } catch (error) {
@@ -320,6 +357,17 @@ router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     console.log('--- DEBUG DELETE KEY ---');
     console.log('Delete key id:', id);
+
+    // Clean up account_keys assignments BEFORE deleting the key
+    console.log(`🧹 Cleaning up assignments for key ${id} before deletion...`);
+    const cleanupResult = await cleanupKeyAssignments(id);
+    
+    if (cleanupResult.success) {
+      console.log(`✅ Cleaned up ${cleanupResult.affectedRows} assignments for key ${id}`);
+    } else {
+      console.warn(`⚠️ Cleanup failed for key ${id}:`, cleanupResult.error);
+      // Continue with deletion even if cleanup fails
+    }
 
     const result = await executeQuery(
       'DELETE FROM vpn_keys WHERE id = ?',
@@ -344,9 +392,22 @@ router.delete('/:id', async (req, res) => {
       });
     }
 
+    // Run general cleanup after deletion to ensure data consistency
+    console.log('🧹 Running general account_keys cleanup after key deletion...');
+    const generalCleanup = await cleanupAccountKeys();
+    if (generalCleanup.success) {
+      console.log('✅ General cleanup completed after key deletion');
+    } else {
+      console.warn('⚠️ General cleanup failed after key deletion:', generalCleanup.error);
+    }
+
     res.json({
       success: true,
-      message: 'Key deleted successfully'
+      message: 'Key deleted successfully',
+      cleanup: {
+        assignmentsRemoved: cleanupResult.success ? cleanupResult.affectedRows : 0,
+        generalCleanup: generalCleanup.success
+      }
     });
 
   } catch (error) {

@@ -213,19 +213,7 @@ INSERT INTO key_groups (code, name, description) VALUES
 ('CTV', 'CTV Group', 'CTV VPN Keys'),
 ('TEST', 'TEST Group', 'Test VPN Keys');
 
--- Insert sample VPN keys
-INSERT INTO vpn_keys (code, group_id, status, days_valid, key_type) VALUES
-('FBX001', 1, 'chờ', 30, '2key'),
-('FBX002', 1, 'chờ', 30, '2key'),
-('FBX003', 1, 'chờ', 30, '2key'),
-('THX001', 2, 'chờ', 30, '2key'),
-('THX002', 2, 'chờ', 30, '2key'),
-('THX003', 2, 'chờ', 30, '2key'),
-('CTV001', 3, 'chờ', 30, '2key'),
-('CTV002', 3, 'chờ', 30, '2key'),
-('CTV003', 3, 'chờ', 30, '2key'),
-('TEST001', 4, 'chờ', 7, '1key'),
-('TEST002', 4, 'chờ', 7, '1key');
+
 
 -- Insert admin user mặc định
 INSERT INTO admins (username, password, email) VALUES 

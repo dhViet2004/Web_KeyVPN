@@ -3,6 +3,7 @@ const { body, validationResult, query } = require('express-validator');
 const { executeQuery } = require('../config/database');
 const { authenticateToken } = require('./auth');
 const { getAccountsStats } = require('../utils/accountHelpers');
+const { cleanupAccountKeys, cleanupKeyAssignments, cleanupAccountAssignments } = require('../utils/cleanupHelpers');
 
 const router = express.Router();
 
@@ -482,61 +483,15 @@ router.delete('/:id', async (req, res) => {
     const accountInfo = accountCheck.data[0];
     console.log(`Deleting account: ${accountInfo.username} (ID: ${accountId})`);
 
-    // Try to handle key assignments before deleting account
-    try {
-      console.log('Handling key assignments before account deletion...');
-      
-      // First, get all keys assigned to this account
-      const assignedKeysResult = await executeQuery(
-        'SELECT key_id FROM account_keys WHERE account_id = ? AND is_active = 1',
-        [accountId]
-      );
-      
-      if (assignedKeysResult.success && assignedKeysResult.data.length > 0) {
-        const keyIds = assignedKeysResult.data.map(row => row.key_id);
-        console.log(`Found ${keyIds.length} keys assigned to account ${accountId}:`, keyIds);
-        
-        // Update each key's status back to 'chờ' if it has no other active assignments
-        for (const keyId of keyIds) {
-          try {
-            // Check if this key has any other active assignments
-            const otherAssignments = await executeQuery(
-              'SELECT COUNT(*) as count FROM account_keys WHERE key_id = ? AND account_id != ? AND is_active = 1',
-              [keyId, accountId]
-            );
-            
-            // If no other active assignments, reset key status to 'chờ'
-            if (otherAssignments.success && otherAssignments.data[0].count === 0) {
-              await executeQuery(
-                'UPDATE vpn_keys SET status = ? WHERE id = ? AND status = ?',
-                ['chờ', keyId, 'đang hoạt động']
-              );
-              console.log(`✅ Updated key ${keyId} status back to 'chờ'`);
-            } else {
-              console.log(`Key ${keyId} has other active assignments, keeping current status`);
-            }
-          } catch (keyUpdateError) {
-            console.warn(`Failed to update status for key ${keyId}:`, keyUpdateError.message);
-            // Continue with other keys
-          }
-        }
-      }
-      
-      // Now delete the key assignments
-      const deleteKeysResult = await executeQuery(
-        'DELETE FROM account_keys WHERE account_id = ?',
-        [accountId]
-      );
-      
-      if (deleteKeysResult.success) {
-        console.log(`✅ Deleted ${deleteKeysResult.data.affectedRows || 0} key assignments`);
-      } else {
-        console.log('⚠️ Key assignments deletion failed (table may not exist):', deleteKeysResult.error);
-        // Continue with account deletion even if key assignments deletion fails
-      }
-    } catch (keyError) {
-      console.log('⚠️ account_keys table may not exist or error occurred:', keyError.message);
-      // Continue with account deletion
+    // Clean up account assignments BEFORE deleting the account
+    console.log(`🧹 Cleaning up assignments for account ${accountId} before deletion...`);
+    const cleanupResult = await cleanupAccountAssignments(accountId);
+    
+    if (cleanupResult.success) {
+      console.log(`✅ Cleaned up ${cleanupResult.affectedRows} assignments for account ${accountId}`);
+    } else {
+      console.warn(`⚠️ Cleanup failed for account ${accountId}:`, cleanupResult.error);
+      // Continue with deletion even if cleanup fails
     }
 
     // Delete the account itself
@@ -561,11 +516,24 @@ router.delete('/:id', async (req, res) => {
       });
     }
 
+    // Run general cleanup after deletion to ensure data consistency
+    console.log('🧹 Running general account_keys cleanup after account deletion...');
+    const generalCleanup = await cleanupAccountKeys();
+    if (generalCleanup.success) {
+      console.log('✅ General cleanup completed after account deletion');
+    } else {
+      console.warn('⚠️ General cleanup failed after account deletion:', generalCleanup.error);
+    }
+
     console.log(`✅ Successfully deleted account: ${accountInfo.username} (ID: ${accountId})`);
 
     res.json({
       success: true,
-      message: `Account '${accountInfo.username}' deleted successfully`
+      message: `Account '${accountInfo.username}' deleted successfully`,
+      cleanup: {
+        assignmentsRemoved: cleanupResult.success ? cleanupResult.affectedRows : 0,
+        generalCleanup: generalCleanup.success
+      }
     });
 
   } catch (error) {
@@ -699,7 +667,7 @@ router.post('/:id/assign-key', [
       const keyInfo = keyCheck.data[0];
       console.log(`Key ${keyId} found: ${keyInfo.code}, status: ${keyInfo.status}, account_count: ${keyInfo.account_count}, key_type: ${keyInfo.key_type}`);
 
-      // Check if key is already assigned to this account
+      // Check if key is already assigned to this account (only active assignments)
       const existingAssignment = await executeQuery(
         'SELECT id FROM account_keys WHERE account_id = ? AND key_id = ? AND is_active = 1',
         [accountId, keyId]
@@ -712,6 +680,13 @@ router.post('/:id/assign-key', [
         });
       }
 
+      // Check if there's an inactive assignment that we can reactivate
+      const inactiveAssignment = await executeQuery(
+        'SELECT id FROM account_keys WHERE account_id = ? AND key_id = ? AND is_active = 0',
+        [accountId, keyId]
+      );
+
+      // KIỂM TRA SLOT LIMIT TRƯỚC KHI GÁN KEY - để tránh gán xong mới kiểm tra
       // Check how many keys are already assigned to this account và áp dụng logic slot động
       const accountKeyInfoQuery = `
         SELECT 
@@ -738,12 +713,13 @@ router.post('/:id/assign-key', [
         const allKeyTypes = accountKeyInfo.data[0].all_key_types;
         const maxSlotsBasedOnType = accountKeyInfo.data[0].max_slots_based_on_type;
         
-        console.log(`Account ${accountId} current status:`, {
+        console.log(`Account ${accountId} current status BEFORE assignment:`, {
           currentKeyCount,
           firstKeyType,
           allKeyTypes,
           maxSlotsBasedOnType,
-          newKeyType: keyInfo.key_type
+          newKeyType: keyInfo.key_type,
+          willReactivate: inactiveAssignment.success && inactiveAssignment.data.length > 0
         });
         
         // Kiểm tra key type compatibility - CHỈ cho phép cùng loại key
@@ -754,7 +730,7 @@ router.post('/:id/assign-key', [
           });
         }
         
-        // Áp dụng logic slot động dựa trên key type
+        // Áp dụng logic slot động dựa trên key type - KIỂM TRA TRƯỚC KHI GÁN
         if (firstKeyType === '1key' && currentKeyCount >= 1) {
           return res.status(400).json({
             success: false,
@@ -788,32 +764,71 @@ router.post('/:id/assign-key', [
         console.log(`Account ${accountId} is empty, allowing ${keyInfo.key_type} assignment`);
       }
 
+      // SAU KHI KIỂM TRA XONG, THỰC HIỆN GÁN KEY
+      let assignResult;
+      if (inactiveAssignment.success && inactiveAssignment.data.length > 0) {
+        // Reactivate existing inactive assignment
+        console.log(`Reactivating inactive assignment for key ${keyId} to account ${accountId}`);
+        assignResult = await executeQuery(
+          'UPDATE account_keys SET is_active = 1, assigned_at = NOW(), assigned_by = ? WHERE account_id = ? AND key_id = ? AND is_active = 0',
+          [req.user?.id || null, accountId, keyId]
+        );
+      } else {
+        // Create new assignment
+        assignResult = await executeQuery(
+          'INSERT INTO account_keys (account_id, key_id, assigned_by) VALUES (?, ?, ?)',
+          [accountId, keyId, req.user?.id || null]
+        );
+      }
+
+      // Assign key to account (reuse assignResult from above)
+      if (!assignResult.success) {
+        console.error('Database assignment error:', assignResult.error);
+        
+        // Provide more specific error messages for different database constraint violations
+        let errorMessage = 'Failed to assign key to account';
+        
+        if (assignResult.error.includes('Duplicate entry') || assignResult.error.includes('unique_account_key')) {
+          errorMessage = `Key ${keyInfo.code} has a database record conflict. This might be due to an inactive assignment that needs reactivation. Please refresh data and try again.`;
+        } else if (assignResult.error.includes('Foreign key constraint')) {
+          errorMessage = 'Database integrity error. Please check if the account or key still exists.';
+        }
+        
+        return res.status(500).json({
+          success: false,
+          message: errorMessage,
+          details: assignResult.error // Include technical details for debugging
+        });
+      }
+
       // Check how many accounts are already assigned to this key (limit based on key's account_count)
+      // This check is done AFTER assignment to ensure we don't exceed the key's account limit
       const keyAssignmentCountCheck = await executeQuery(
         'SELECT COUNT(*) as count FROM account_keys WHERE key_id = ? AND is_active = 1',
         [keyId]
       );
 
-      if (keyAssignmentCountCheck.success && keyAssignmentCountCheck.data[0].count >= keyInfo.account_count) {
+      if (keyAssignmentCountCheck.success && keyAssignmentCountCheck.data[0].count > keyInfo.account_count) {
+        // If we exceeded the limit, rollback the assignment
+        console.error(`Key ${keyId} exceeded account limit after assignment. Rolling back...`);
+        
+        if (inactiveAssignment.success && inactiveAssignment.data.length > 0) {
+          // Rollback reactivation
+          await executeQuery(
+            'UPDATE account_keys SET is_active = 0 WHERE account_id = ? AND key_id = ?',
+            [accountId, keyId]
+          );
+        } else {
+          // Rollback new assignment
+          await executeQuery(
+            'DELETE FROM account_keys WHERE account_id = ? AND key_id = ?',
+            [accountId, keyId]
+          );
+        }
+        
         return res.status(400).json({
           success: false,
           message: `Key ${keyInfo.code} already has maximum number of accounts assigned (${keyInfo.account_count})`
-        });
-      }
-
-      // Assign key to account
-      const result = await executeQuery(
-        'INSERT INTO account_keys (account_id, key_id, assigned_by) VALUES (?, ?, ?)',
-        [accountId, keyId, req.user?.id || null]
-      );
-
-      if (!result.success) {
-        console.error('Database query error:', result.error);
-        return res.status(500).json({
-          success: false,
-          message: result.error.includes('Duplicate entry') ? 
-            'Key is already assigned to this account' : 
-            'Failed to assign key to account'
         });
       }
 
@@ -867,7 +882,18 @@ router.post('/:id/assign-key', [
 
       const updatedAccount = await executeQuery(updatedAccountQuery, [accountId, accountId]);
 
-      console.log(`✅ Key ${keyId} (${keyInfo.code}) assigned to account ${accountId} successfully`);
+      // Determine if this was a reactivation or new assignment
+      const isReactivation = inactiveAssignment.success && inactiveAssignment.data.length > 0;
+      
+      console.log(`✅ Key ${keyId} (${keyInfo.code}) ${isReactivation ? 'reactivated for' : 'assigned to'} account ${accountId} successfully`);
+      console.log(`📊 Assignment summary:`, {
+        keyId,
+        keyCode: keyInfo.code,
+        keyType: keyInfo.key_type,
+        accountId,
+        wasReactivation: isReactivation,
+        finalActiveAssignments: keyAssignmentCountCheck.success ? keyAssignmentCountCheck.data[0].count : 'unknown'
+      });
 
       // Tạo message về thay đổi slot dựa trên key type
       let slotChangeMessage = '';
@@ -881,7 +907,7 @@ router.post('/:id/assign-key', [
 
       res.json({
         success: true,
-        message: `Key ${keyInfo.code} assigned successfully`,
+        message: `Key ${keyInfo.code} ${isReactivation ? 'reactivated and assigned' : 'assigned'} successfully`,
         data: {
           keyId: keyId,
           keyCode: keyInfo.code,
