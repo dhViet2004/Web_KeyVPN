@@ -3,7 +3,7 @@ const { body, validationResult, query } = require('express-validator');
 const { executeQuery } = require('../config/database');
 const { authenticateToken } = require('./auth');
 const { getAccountsStats } = require('../utils/accountHelpers');
-const { cleanupAccountKeys, cleanupKeyAssignments, cleanupAccountAssignments } = require('../utils/cleanupHelpers');
+const { cleanupAccountKeys, cleanupAccountAssignments } = require('../utils/cleanupHelpers');
 
 const router = express.Router();
 

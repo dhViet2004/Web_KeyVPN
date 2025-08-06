@@ -1046,17 +1046,15 @@ const CreateKey = () => {
       }
       
       if (currentAccountId && currentAccountId !== selectedTransferAccountId) {
-        // Sử dụng API transferKey với tài khoản nguồn đã tìm được
-        
+        // Use unassign/assign approach since transferKey API may not be implemented
         try {
-          const response = await accountsAPI.transferKey(
-            currentKeyForTransfer.id, 
-            currentAccountId, 
-            selectedTransferAccountId
-          )
+          // Unassign từ tài khoản cũ
+          await accountsAPI.unassignKey(currentAccountId, currentKeyForTransfer.id)
           
-          if (response.success) {
-            // Refresh dữ liệu ngay lập tức
+          // Assign vào tài khoản mới
+          const assignResponse = await accountsAPI.assignKey(selectedTransferAccountId, currentKeyForTransfer.id)
+          if (assignResponse.success) {
+            // Refresh dữ liệu sau khi unassign/assign thành công
             await Promise.all([
               fetchKeys(activeGroup),
               fetchAllKeys()
@@ -1065,33 +1063,10 @@ const CreateKey = () => {
             handleTransferCancel()
             return
           } else {
-            throw new Error(response.message || 'Transfer API failed')
+            throw new Error(assignResponse.message || 'Assign failed after unassign')
           }
-        } catch (transferError) {
-          console.log('Transfer API failed, trying unassign/assign approach:', transferError.message)
-          
-          // Fallback: Thử unassign rồi assign
-          try {
-            // Unassign từ tài khoản cũ
-            await accountsAPI.unassignKey(currentAccountId, currentKeyForTransfer.id)
-            
-            // Assign vào tài khoản mới
-            const assignResponse = await accountsAPI.assignKey(selectedTransferAccountId, currentKeyForTransfer.id)
-            if (assignResponse.success) {
-              // Refresh dữ liệu sau khi unassign/assign thành công
-              await Promise.all([
-                fetchKeys(activeGroup),
-                fetchAllKeys()
-              ]);
-              messageApi.success(`Đã chuyển key ${currentKeyForTransfer.code} sang tài khoản mới thành công!`)
-              handleTransferCancel()
-              return
-            } else {
-              throw new Error(assignResponse.message || 'Assign failed after unassign')
-            }
-          } catch (unassignAssignError) {
-            throw new Error(`Không thể chuyển key: ${unassignAssignError.message}`)
-          }
+        } catch (unassignAssignError) {
+          throw new Error(`Không thể chuyển key: ${unassignAssignError.message}`)
         }
       } else if (currentAccountId === selectedTransferAccountId) {
         messageApi.warning(`Key ${currentKeyForTransfer.code} đã thuộc về tài khoản đích rồi!`)
@@ -1223,20 +1198,6 @@ const CreateKey = () => {
       key: 'account_details',
       width: 200,
       render: (account_details, record) => {
-        // Debug log để kiểm tra dữ liệu nhận được - chỉ log khi có vấn đề
-        if (record.status === 'đang hoạt động' && (!account_details || (Array.isArray(account_details) && account_details.length === 0))) {
-          console.warn('⚠️ Active key without account details:', {
-            keyCode: record.code,
-            keyId: record.id,
-            status: record.status,
-            account_details,
-            assigned_account_usernames: record.assigned_account_usernames,
-            assigned_accounts: record.assigned_accounts,
-            assigned_account_details: record.assigned_account_details,
-            accounts: record.accounts,
-            rawRecord: record
-          });
-        }
         
         try {
           let accounts = [];

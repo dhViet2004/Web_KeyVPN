@@ -94,8 +94,6 @@ router.get('/:group', [
       ${whereClause}
     `;
 
-    // Add pagination parameters cho keysQuery
-    const finalQueryParams = [...queryParams, limit, offset];
     // countParams chỉ chứa các tham số WHERE, không có limit/offset
 
     // Debug logging
