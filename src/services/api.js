@@ -237,6 +237,30 @@ export const publicAPI = {
     return response.json();
   },
 
+  // Auto assign key to available account (no auth required)
+  autoAssignKey: async (keyCode) => {
+    const response = await fetch(`${API_BASE_URL}/public/auto-assign-key`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ keyCode }),
+    });
+    return response.json();
+  },
+
+  // Activate key and create VPN account (no auth required)
+  activateKey: async (keyCode) => {
+    const response = await fetch(`${API_BASE_URL}/public/activate-key`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ keyCode }),
+    });
+    return response.json();
+  },
+
   // Use gift code (no auth required)
   useGiftCode: async (giftCode, keyCode) => {
     const response = await fetch(`${API_BASE_URL}/public/use-gift`, {

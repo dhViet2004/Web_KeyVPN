@@ -79,7 +79,7 @@ router.get('/:group', [
           WHEN vk.expires_at > NOW() THEN DATEDIFF(vk.expires_at, NOW())
           ELSE 0
         END as days_remaining,
-        (SELECT COUNT(*) FROM vpn_accounts va WHERE va.key_id = vk.id) as linked_accounts
+        (SELECT COUNT(*) FROM account_keys ak WHERE ak.key_id = vk.id AND ak.is_active = 1) as linked_accounts
       FROM vpn_keys vk
       INNER JOIN key_groups kg ON vk.group_id = kg.id
       ${whereClause}
