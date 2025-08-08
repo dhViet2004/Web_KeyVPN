@@ -10,6 +10,100 @@ const router = express.Router();
 // Apply authentication to all routes (temporary bypass for testing)
 router.use(authenticateToken);
 
+// @route   GET /api/keys/:keyId/accounts
+// @desc    Get account details for a specific key
+// @access  Private
+router.get('/:keyId/accounts', async (req, res) => {
+  try {
+    const { keyId } = req.params;
+
+    // Validate keyId is a number
+    if (!keyId || isNaN(parseInt(keyId))) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID key không hợp lệ'
+      });
+    }
+
+  console.log(`🔍 Getting account details for key ID: ${keyId}`);
+
+  // First check if key exists
+  const keyCheckQuery = `SELECT id, code, status FROM vpn_keys WHERE id = ?`;
+  const keyResults = await executeQuery(keyCheckQuery, [keyId]);
+
+  console.log(`Key check result:`, keyResults);
+
+  if (!keyResults.success || !keyResults.data || keyResults.data.length === 0) {
+    return res.status(404).json({
+      success: false,
+      message: 'Key không tồn tại'
+    });
+  }
+
+  const keyInfo = {
+    id: keyResults.data[0].id,
+    code: keyResults.data[0].code,
+    status: keyResults.data[0].status
+  };
+
+  console.log(`Found key:`, keyInfo);
+
+  // Get associated accounts using the account_keys relationship table
+  const accountsQuery = `
+    SELECT 
+      va.id as account_id,
+      va.username,
+      va.password,
+      va.is_active,
+      va.expires_at,
+      va.created_at as account_created_at,
+      va.last_used,
+      va.usage_count,
+      ak.assigned_at,
+      ak.is_active as assignment_active
+    FROM account_keys ak
+    INNER JOIN vpn_accounts va ON ak.account_id = va.id
+    WHERE ak.key_id = ? AND va.is_active = 1
+    ORDER BY ak.assigned_at DESC
+  `;
+
+  const accountResults = await executeQuery(accountsQuery, [keyId]);
+  console.log(`Account query result:`, accountResults);
+
+  let accounts = [];
+  if (accountResults.success && accountResults.data) {
+    accounts = accountResults.data.map(row => ({
+      id: row.account_id,
+      username: row.username,
+      password: row.password,
+      status: row.is_active ? 'active' : 'suspended',
+      expires_at: row.expires_at,
+      created_at: row.account_created_at,
+      last_used: row.last_used,
+      usage_count: row.usage_count,
+      assigned_at: row.assigned_at,
+      assignment_active: row.assignment_active
+    }));
+  }
+
+  console.log(`Final accounts data:`, accounts);    res.json({
+      success: true,
+      data: {
+        key: keyInfo,
+        accounts: accounts
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting key accounts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
 // @route   GET /api/keys/:group
 // @desc    Get keys by group with pagination and search
 // @access  Private
@@ -79,7 +173,7 @@ router.get('/:group', [
           WHEN vk.expires_at > NOW() THEN DATEDIFF(vk.expires_at, NOW())
           ELSE 0
         END as days_remaining,
-        (SELECT COUNT(*) FROM account_keys ak WHERE ak.key_id = vk.id AND ak.is_active = 1) as linked_accounts
+        (SELECT COUNT(*) FROM account_keys ak WHERE ak.key_id = vk.id) as linked_accounts
       FROM vpn_keys vk
       INNER JOIN key_groups kg ON vk.group_id = kg.id
       ${whereClause}
@@ -286,6 +380,58 @@ router.put('/:id/status', [
 
   } catch (error) {
     console.error('Update key status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   PUT /api/keys/:id/expiry
+// @desc    Update key expiry date
+// @access  Private
+router.put('/:id/expiry', [
+  body('expires_at').isISO8601().withMessage('Invalid date format')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { id } = req.params;
+    const { expires_at } = req.body;
+
+    const result = await executeQuery(
+      'UPDATE vpn_keys SET expires_at = ?, updated_at = NOW() WHERE id = ?',
+      [expires_at, id]
+    );
+
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update key expiry'
+      });
+    }
+
+    if (result.data.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Key not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Key expiry updated successfully'
+    });
+
+  } catch (error) {
+    console.error('Update key expiry error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error'

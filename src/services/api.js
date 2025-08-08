@@ -134,11 +134,18 @@ export const keysAPI = {
   updateKeyStatus: (keyId, status) =>
     apiClient.put(`/keys/${keyId}/status`, { status }),
 
+  // Update key expiry date
+  updateKeyExpiry: (keyId, expiresAt) =>
+    apiClient.put(`/keys/${keyId}/expiry`, { expires_at: expiresAt }),
+
   // Delete key
   deleteKey: (keyId) => apiClient.delete(`/keys/${keyId}`),
 
   // Get keys statistics
   getStats: () => apiClient.get('/keys/stats/overview'),
+
+  // Get key account details
+  getKeyAccountDetails: (keyId) => apiClient.get(`/keys/${keyId}/accounts`),
 };
 
 // Accounts API

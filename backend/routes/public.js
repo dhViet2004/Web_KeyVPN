@@ -85,7 +85,7 @@ router.post('/check-key', [
         TIMESTAMPDIFF(SECOND, NOW(), va.expires_at) as seconds_remaining
       FROM vpn_accounts va
       INNER JOIN account_keys ak ON va.id = ak.account_id
-      WHERE ak.key_id = ? AND ak.is_active = 1 AND va.is_active = 1
+      WHERE ak.key_id = ? AND va.is_active = 1
       ORDER BY va.created_at DESC
     `;
 
@@ -257,7 +257,7 @@ router.post('/auto-assign-key', [
       SELECT ak.id, ak.account_id, va.username 
       FROM account_keys ak
       JOIN vpn_accounts va ON ak.account_id = va.id
-      WHERE ak.key_id = ? AND ak.is_active = 1
+      WHERE ak.key_id = ?
     `;
 
     const existingCheckResult = await executeQuery(existingAssignmentCheck, [keyData.id]);
@@ -285,7 +285,7 @@ router.post('/auto-assign-key', [
       availableAccountsQuery = `
         SELECT va.id, va.username, va.password, va.expires_at
         FROM vpn_accounts va
-        LEFT JOIN account_keys ak ON va.id = ak.account_id AND ak.is_active = 1
+        LEFT JOIN account_keys ak ON va.id = ak.account_id
         WHERE va.is_active = 1 
           AND va.expires_at > NOW()
           AND ak.id IS NULL
@@ -300,7 +300,7 @@ router.post('/auto-assign-key', [
                COUNT(ak.id) as assigned_keys,
                GROUP_CONCAT(DISTINCT vk.key_type) as existing_key_types
         FROM vpn_accounts va
-        LEFT JOIN account_keys ak ON va.id = ak.account_id AND ak.is_active = 1
+        LEFT JOIN account_keys ak ON va.id = ak.account_id
         LEFT JOIN vpn_keys vk ON ak.key_id = vk.id
         WHERE va.is_active = 1 AND va.expires_at > NOW()
         GROUP BY va.id, va.username, va.password, va.expires_at
@@ -317,7 +317,7 @@ router.post('/auto-assign-key', [
                COUNT(ak.id) as assigned_keys,
                GROUP_CONCAT(DISTINCT vk.key_type) as existing_key_types
         FROM vpn_accounts va
-        LEFT JOIN account_keys ak ON va.id = ak.account_id AND ak.is_active = 1
+        LEFT JOIN account_keys ak ON va.id = ak.account_id
         LEFT JOIN vpn_keys vk ON ak.key_id = vk.id
         WHERE va.is_active = 1 AND va.expires_at > NOW()
         GROUP BY va.id, va.username, va.password, va.expires_at
@@ -338,10 +338,10 @@ router.post('/auto-assign-key', [
 
     const targetAccount = accountResult.data[0];
 
-    // Assign key to account
+    // Assign key to account - simplified query without is_active and assigned_at
     const assignQuery = `
-      INSERT INTO account_keys (account_id, key_id, is_active, assigned_at)
-      VALUES (?, ?, 1, NOW())
+      INSERT INTO account_keys (account_id, key_id)
+      VALUES (?, ?)
     `;
 
     const assignResult = await executeQuery(assignQuery, [targetAccount.id, keyData.id]);

@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
-import { PlusOutlined, DeleteOutlined, FileTextOutlined, SearchOutlined, UserOutlined, UnorderedListOutlined, ReloadOutlined, RetweetOutlined, SwapOutlined } from '@ant-design/icons'
-import { Button, Input, Select, Table, Radio, Space, Typography, Divider, Form, Tabs, Modal, App, Spin, Alert, Popconfirm } from 'antd'
+import { PlusOutlined, DeleteOutlined, FileTextOutlined, SearchOutlined, UserOutlined, UnorderedListOutlined, ReloadOutlined, RetweetOutlined, SwapOutlined, EyeOutlined, EditOutlined } from '@ant-design/icons'
+import { Button, Input, Select, Table, Radio, Space, Typography, Divider, Form, Tabs, Modal, App, Spin, Alert, Popconfirm, DatePicker } from 'antd'
 import { useSettings } from '../hooks/useSettings'
 import { useKeys } from '../hooks/useKeys'
 import { keysAPI, accountsAPI } from '../services/api'
+import dayjs from 'dayjs'
 
 const { Title } = Typography
 const { Option } = Select
@@ -59,6 +60,17 @@ const CreateKey = () => {
   const [transferAccounts, setTransferAccounts] = useState([])
   const [loadingTransferAccounts, setLoadingTransferAccounts] = useState(false)
   const [selectedTransferAccountId, setSelectedTransferAccountId] = useState(null)
+
+  // States for view account modal
+  const [isViewAccountModalOpen, setIsViewAccountModalOpen] = useState(false)
+  const [currentKeyForView, setCurrentKeyForView] = useState(null)
+  const [keyAccountDetails, setKeyAccountDetails] = useState([])
+  const [loadingKeyAccounts, setLoadingKeyAccounts] = useState(false)
+
+  // States for edit expiry modal
+  const [isEditExpiryModalOpen, setIsEditExpiryModalOpen] = useState(false)
+  const [currentKeyForEdit, setCurrentKeyForEdit] = useState(null)
+  const [newExpiryDate, setNewExpiryDate] = useState(null)
 
   // Fetch all keys for filtering purpose
   const fetchAllKeys = async () => {
@@ -808,6 +820,116 @@ const CreateKey = () => {
     }
   }
 
+  // Functions for view account modal
+  const showViewAccountModal = async (key) => {
+    setCurrentKeyForView(key)
+    setIsViewAccountModalOpen(true)
+    setKeyAccountDetails([])
+    await fetchKeyAccountDetails(key)
+  }
+
+  const handleViewAccountCancel = () => {
+    setIsViewAccountModalOpen(false)
+    setCurrentKeyForView(null)
+    setKeyAccountDetails([])
+  }
+
+  const fetchKeyAccountDetails = async (key) => {
+    try {
+      setLoadingKeyAccounts(true)
+      console.log('🔍 Fetching account details for key:', key)
+
+      // Use the new API endpoint to get account details
+      const response = await keysAPI.getKeyAccountDetails(key.id)
+      
+      if (response.success && response.data) {
+        console.log('✅ API response:', response.data)
+        
+        if (response.data.accounts && response.data.accounts.length > 0) {
+          const accountDetails = response.data.accounts.map(account => ({
+            id: account.id,
+            username: account.username,
+            password: account.password,
+            status: account.status,
+            expires_at: account.expires_at,
+            assigned_at: account.assigned_at,
+            usage_count: account.usage_count || 0,
+            last_used: account.last_used
+          }))
+          
+          setKeyAccountDetails(accountDetails)
+        } else {
+          // Key chưa có tài khoản nào được gán
+          if (key.status === 'đang hoạt động') {
+            setKeyAccountDetails([{
+              id: 'placeholder',
+              username: 'Không tìm thấy thông tin',
+              password: '***',
+              status: 'unknown',
+              expires_at: null,
+              note: 'Key đang hoạt động nhưng không tìm thấy thông tin tài khoản trong database'
+            }])
+          } else {
+            setKeyAccountDetails([])
+          }
+        }
+      } else {
+        console.error('❌ API call failed:', response)
+        messageApi.error('Lỗi tải thông tin tài khoản: ' + (response.message || 'Unknown error'))
+        setKeyAccountDetails([])
+      }
+    } catch (error) {
+      console.error('Error fetching key account details:', error)
+      setKeyAccountDetails([])
+      messageApi.error('Lỗi tải thông tin tài khoản: ' + (error.message || error))
+    } finally {
+      setLoadingKeyAccounts(false)
+    }
+  }
+
+  // Functions for edit expiry modal
+  const showEditExpiryModal = (key) => {
+    setCurrentKeyForEdit(key)
+    setIsEditExpiryModalOpen(true)
+    setNewExpiryDate(key.expires_at ? dayjs(key.expires_at) : null)
+  }
+
+  const handleEditExpiryCancel = () => {
+    setIsEditExpiryModalOpen(false)
+    setCurrentKeyForEdit(null)
+    setNewExpiryDate(null)
+  }
+
+  const handleUpdateExpiry = async () => {
+    if (!currentKeyForEdit || !newExpiryDate) {
+      messageApi.warning('Vui lòng chọn ngày hết hạn mới!')
+      return
+    }
+
+    try {
+      messageApi.info('Đang cập nhật thời gian hết hạn...')
+
+      // Call API to update key expiry
+      const response = await keysAPI.updateKeyExpiry(currentKeyForEdit.id, newExpiryDate.format('YYYY-MM-DD HH:mm:ss'))
+      
+      if (response.success) {
+        // Refresh data
+        await Promise.all([
+          fetchKeys(activeGroup),
+          fetchAllKeys()
+        ])
+        
+        messageApi.success(`Đã cập nhật thời gian hết hạn của key ${currentKeyForEdit.code} thành công!`)
+        handleEditExpiryCancel()
+      } else {
+        messageApi.error('Lỗi cập nhật thời gian hết hạn: ' + (response.message || 'Unknown error'))
+      }
+    } catch (error) {
+      console.error('Update expiry error:', error)
+      messageApi.error('Lỗi cập nhật thời gian hết hạn: ' + (error.message || error))
+    }
+  }
+
   // Functions for transfer key modal
   const showTransferModal = async (key) => {
     // Chỉ cho phép chuyển key đang hoạt động
@@ -1190,74 +1312,19 @@ const CreateKey = () => {
     },
     { title: 'Mã key', dataIndex: 'code', key: 'code', render: v => <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{v}</span> },
     { title: 'Nhóm', dataIndex: 'group', key: 'group' },
-    { title: 'Trạng thái', dataIndex: 'status', key: 'status' },
-    { title: 'Ngày', dataIndex: 'days', key: 'days' },
     { 
-      title: 'Danh sách tài khoản', 
-      dataIndex: 'account_details', 
-      key: 'account_details',
-      width: 200,
-      render: (account_details, record) => {
-        
-        try {
-          let accounts = [];
-          
-          // Thử parse từ account_details trước (từ query JOIN)
-          if (account_details && typeof account_details === 'string') {
-            try {
-              accounts = JSON.parse(account_details);
-            } catch {
-              // Có thể là string đơn giản, chuyển thành array
-              accounts = [{ username: account_details }];
-            }
-          } else if (Array.isArray(account_details)) {
-            accounts = account_details;
-          } 
-          // Fallback: thử từ các field khác
-          else if (record.assigned_account_usernames) {
-            // Nếu backend trả về danh sách username trực tiếp
-            const usernames = typeof record.assigned_account_usernames === 'string' 
-              ? record.assigned_account_usernames.split(',').map(u => u.trim())
-              : record.assigned_account_usernames;
-            accounts = usernames.map(username => ({ username }));
-          }
-          else if (record.assigned_accounts) {
-            // Fallback cũ - chỉ có ID
-            if (typeof record.assigned_accounts === 'string') {
-              const assignedIds = JSON.parse(record.assigned_accounts || '[]');
-              accounts = assignedIds.map(id => ({ account_id: id, username: `ID: ${id}` }));
-            } else if (Array.isArray(record.assigned_accounts)) {
-              accounts = record.assigned_accounts.map(id => ({ account_id: id, username: `ID: ${id}` }));
-            }
-          }
-          
-          if (accounts.length === 0) {
-            return <span className="text-gray-400 italic">Chưa gán</span>;
-          }
-          
-          // Display account usernames
-          return (
-            <div className="flex flex-wrap gap-1">
-              {accounts.map((account, index) => (
-                <span 
-                  key={account.account_id || account.id || index}
-                  className={`px-2 py-1 rounded text-xs ${
-                    account.is_active === false || account.status === 'suspended'
-                      ? 'bg-red-100 text-red-700' 
-                      : account.is_active === true || account.status === 'active'
-                      ? 'bg-green-100 text-green-700'
-                      : 'bg-blue-100 text-blue-700'
-                  }`}
-                  title={`${account.username || 'N/A'} | ID: ${account.account_id || account.id || 'N/A'} | Trạng thái: ${account.is_active ? 'Hoạt động' : 'Tạm dừng'}`}
-                >
-                  {account.username || `ID: ${account.account_id || account.id || 'N/A'}`}
-                </span>
-              ))}
-            </div>
-          );
-        } catch (error) {
-          console.error('Error parsing account_details:', error, 'Data:', account_details);
-          return <span className="text-red-400 italic">Lỗi dữ liệu</span>;
+      title: 'Trạng thái', 
+      dataIndex: 'status', 
+      key: 'status',
+      render: (status, record) => {
+        if (status === 'chờ') {
+          return <span className="px-2 py-1 bg-yellow-100 text-yellow-700 rounded text-xs font-semibold">Chờ</span>;
+        } else if (status === 'đang hoạt động') {
+          const days = record.days || 0;
+          const hours = Math.round(days * 24); // Chuyển đổi ngày thành giờ
+          return <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-semibold">{hours} giờ</span>;
+        } else {
+          return <span className="px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs font-semibold">{status}</span>;
         }
       }
     },
@@ -1265,6 +1332,24 @@ const CreateKey = () => {
     {
       title: 'Thao tác', key: 'actions', render: (_, record) => (
         <Space>
+          {/* Nút xem thông tin tài khoản */}
+          <Button 
+            icon={<EyeOutlined />} 
+            size="small" 
+            type="default"
+            onClick={() => showViewAccountModal(record)}
+            title="Xem thông tin tài khoản chứa key này"
+          />
+          
+          {/* Nút chỉnh sửa thời gian hết hạn */}
+          <Button 
+            icon={<EditOutlined />} 
+            size="small" 
+            type="default"
+            onClick={() => showEditExpiryModal(record)}
+            title="Chỉnh sửa thời gian hết hạn"
+          />
+          
           {/* Chỉ hiển thị nút gán nếu key có trạng thái 'chờ' hoặc có thể gán được */}
           {(record.status === 'chờ' || record.status === 'đang hoạt động') && (
             <Button 
@@ -2091,6 +2176,133 @@ const CreateKey = () => {
               Chuyển Key sang Tài khoản Đích
             </Button>
           </div>
+        </div>
+      </Modal>
+
+      {/* Edit Expiry Modal */}
+      <Modal
+        title={`Chỉnh sửa thời gian hết hạn Key: ${currentKeyForEdit?.code || ''}`}
+        open={isEditExpiryModalOpen}
+        onOk={handleUpdateExpiry}
+        onCancel={handleEditExpiryCancel}
+        okText="Cập nhật"
+        cancelText="Hủy"
+        width={400}
+      >
+        <div className="py-4">
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Thời gian hết hạn hiện tại:
+            </label>
+            <p className="text-sm text-gray-600">
+              {currentKeyForEdit?.expires_at ? 
+                dayjs(currentKeyForEdit.expires_at).format('DD/MM/YYYY HH:mm') : 
+                'Chưa có thời gian hết hạn'
+              }
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Thời gian hết hạn mới:
+            </label>
+            <DatePicker
+              showTime
+              value={newExpiryDate}
+              onChange={setNewExpiryDate}
+              format="DD/MM/YYYY HH:mm"
+              placeholder="Chọn thời gian hết hạn"
+              className="w-full"
+              disabledDate={(current) => current && current < dayjs().startOf('day')}
+            />
+          </div>
+        </div>
+      </Modal>
+
+      {/* View Account Modal */}
+      <Modal
+        title={`Thông tin tài khoản chứa Key: ${currentKeyForView?.code || ''}`}
+        open={isViewAccountModalOpen}
+        onCancel={handleViewAccountCancel}
+        footer={[
+          <Button key="close" onClick={handleViewAccountCancel}>
+            Đóng
+          </Button>
+        ]}
+        width={600}
+      >
+        <div className="max-h-96 overflow-y-auto">
+          {loadingKeyAccounts ? (
+            <div className="text-center py-8">
+              <Spin size="large" />
+              <p className="mt-2 text-gray-500">Đang tải thông tin tài khoản...</p>
+            </div>
+          ) : keyAccountDetails.length === 0 ? (
+            <div className="text-center py-8">
+              <p className="text-gray-500 mb-2">
+                {currentKeyForView?.status === 'chờ' ? 
+                  'Key này chưa được gán vào tài khoản nào.' :
+                  currentKeyForView?.status === 'đang hoạt động' ?
+                  'Key đang hoạt động nhưng không tìm thấy thông tin tài khoản.' :
+                  'Key này không có thông tin tài khoản.'
+                }
+              </p>
+              <p className="text-xs text-gray-400">
+                Trạng thái key: <span className="font-semibold">{currentKeyForView?.status || 'Không xác định'}</span>
+              </p>
+              {currentKeyForView?.status === 'chờ' && (
+                <p className="text-xs text-blue-500 mt-1">
+                  Key đang ở trạng thái chờ gán tài khoản
+                </p>
+              )}
+              {currentKeyForView?.status === 'đang hoạt động' && (
+                <p className="text-xs text-yellow-600 mt-1">
+                  Có thể có lỗi đồng bộ dữ liệu. Vui lòng liên hệ admin nếu key hoạt động bình thường.
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {keyAccountDetails.map((account, index) => (
+                <div key={account.id || index} className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <span className="text-sm font-semibold text-gray-700">Tên đăng nhập:</span>
+                      <p className="text-sm font-mono font-bold text-blue-600">{account.username || 'N/A'}</p>
+                    </div>
+                    <div>
+                      <span className="text-sm font-semibold text-gray-700">Mật khẩu:</span>
+                      <p className="text-sm font-mono font-bold text-green-600">{account.password || 'N/A'}</p>
+                    </div>
+                    <div>
+                      <span className="text-sm font-semibold text-gray-700">Trạng thái:</span>
+                      <span className={`text-xs px-2 py-1 rounded ${
+                        account.status === 'active' ? 'bg-green-100 text-green-600' :
+                        account.status === 'suspended' ? 'bg-red-100 text-red-600' :
+                        'bg-gray-100 text-gray-600'
+                      }`}>
+                        {account.status === 'active' ? 'Hoạt động' : 
+                         account.status === 'suspended' ? 'Tạm khóa' : account.status}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-sm font-semibold text-gray-700">Hạn sử dụng:</span>
+                      <p className="text-sm text-orange-600">
+                        {account.expires_at ? 
+                          new Date(account.expires_at).toLocaleDateString('vi-VN') : 
+                          'Không giới hạn'
+                        }
+                      </p>
+                    </div>
+                    {account.note && (
+                      <div className="col-span-2">
+                        <span className="text-xs text-gray-500 italic">{account.note}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </Modal>
     </div>

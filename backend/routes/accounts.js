@@ -667,9 +667,9 @@ router.post('/:id/assign-key', [
       const keyInfo = keyCheck.data[0];
       console.log(`Key ${keyId} found: ${keyInfo.code}, status: ${keyInfo.status}, account_count: ${keyInfo.account_count}, key_type: ${keyInfo.key_type}`);
 
-      // Check if key is already assigned to this account (only active assignments)
+      // Check if key is already assigned to this account
       const existingAssignment = await executeQuery(
-        'SELECT id FROM account_keys WHERE account_id = ? AND key_id = ? AND is_active = 1',
+        'SELECT id FROM account_keys WHERE account_id = ? AND key_id = ?',
         [accountId, keyId]
       );
 
@@ -679,12 +679,6 @@ router.post('/:id/assign-key', [
           message: 'Key is already assigned to this account'
         });
       }
-
-      // Check if there's an inactive assignment that we can reactivate
-      const inactiveAssignment = await executeQuery(
-        'SELECT id FROM account_keys WHERE account_id = ? AND key_id = ? AND is_active = 0',
-        [accountId, keyId]
-      );
 
       // KIỂM TRA SLOT LIMIT TRƯỚC KHI GÁN KEY - để tránh gán xong mới kiểm tra
       // Check how many keys are already assigned to this account và áp dụng logic slot động
@@ -702,7 +696,7 @@ router.post('/:id/assign-key', [
           END as max_slots_based_on_type
         FROM account_keys ak
         INNER JOIN vpn_keys vk ON ak.key_id = vk.id
-        WHERE ak.account_id = ? AND ak.is_active = 1
+        WHERE ak.account_id = ?
       `;
       
       const accountKeyInfo = await executeQuery(accountKeyInfoQuery, [accountId]);
@@ -718,8 +712,7 @@ router.post('/:id/assign-key', [
           firstKeyType,
           allKeyTypes,
           maxSlotsBasedOnType,
-          newKeyType: keyInfo.key_type,
-          willReactivate: inactiveAssignment.success && inactiveAssignment.data.length > 0
+          newKeyType: keyInfo.key_type
         });
         
         // Kiểm tra key type compatibility - CHỈ cho phép cùng loại key
@@ -764,22 +757,11 @@ router.post('/:id/assign-key', [
         console.log(`Account ${accountId} is empty, allowing ${keyInfo.key_type} assignment`);
       }
 
-      // SAU KHI KIỂM TRA XONG, THỰC HIỆN GÁN KEY
-      let assignResult;
-      if (inactiveAssignment.success && inactiveAssignment.data.length > 0) {
-        // Reactivate existing inactive assignment
-        console.log(`Reactivating inactive assignment for key ${keyId} to account ${accountId}`);
-        assignResult = await executeQuery(
-          'UPDATE account_keys SET is_active = 1, assigned_at = NOW(), assigned_by = ? WHERE account_id = ? AND key_id = ? AND is_active = 0',
-          [req.user?.id || null, accountId, keyId]
-        );
-      } else {
-        // Create new assignment
-        assignResult = await executeQuery(
-          'INSERT INTO account_keys (account_id, key_id, assigned_by) VALUES (?, ?, ?)',
-          [accountId, keyId, req.user?.id || null]
-        );
-      }
+      // SAU KHI KIỂM TRA XONG, THỰC HIỆN GÁN KEY - luôn tạo assignment mới
+      const assignResult = await executeQuery(
+        'INSERT INTO account_keys (account_id, key_id, assigned_by) VALUES (?, ?, ?)',
+        [accountId, keyId, req.user?.id || null]
+      );
 
       // Assign key to account (reuse assignResult from above)
       if (!assignResult.success) {
@@ -812,19 +794,11 @@ router.post('/:id/assign-key', [
         // If we exceeded the limit, rollback the assignment
         console.error(`Key ${keyId} exceeded account limit after assignment. Rolling back...`);
         
-        if (inactiveAssignment.success && inactiveAssignment.data.length > 0) {
-          // Rollback reactivation
-          await executeQuery(
-            'UPDATE account_keys SET is_active = 0 WHERE account_id = ? AND key_id = ?',
-            [accountId, keyId]
-          );
-        } else {
-          // Rollback new assignment
-          await executeQuery(
-            'DELETE FROM account_keys WHERE account_id = ? AND key_id = ?',
-            [accountId, keyId]
-          );
-        }
+        // Rollback assignment - always delete the record
+        await executeQuery(
+          'DELETE FROM account_keys WHERE account_id = ? AND key_id = ?',
+          [accountId, keyId]
+        );
         
         return res.status(400).json({
           success: false,
@@ -882,10 +856,10 @@ router.post('/:id/assign-key', [
 
       const updatedAccount = await executeQuery(updatedAccountQuery, [accountId, accountId]);
 
-      // Determine if this was a reactivation or new assignment
-      const isReactivation = inactiveAssignment.success && inactiveAssignment.data.length > 0;
+      // All assignments are new assignments now (no reactivation)
+      const isReactivation = false;
       
-      console.log(`✅ Key ${keyId} (${keyInfo.code}) ${isReactivation ? 'reactivated for' : 'assigned to'} account ${accountId} successfully`);
+      console.log(`✅ Key ${keyId} (${keyInfo.code}) assigned to account ${accountId} successfully`);
       console.log(`📊 Assignment summary:`, {
         keyId,
         keyCode: keyInfo.code,
@@ -990,9 +964,9 @@ router.delete('/:id/unassign-key/:keyId', async (req, res) => {
         });
       }
 
-      // Remove assignment (soft delete)
+      // Remove assignment (hard delete)
       const result = await executeQuery(
-        'UPDATE account_keys SET is_active = 0 WHERE account_id = ? AND key_id = ?',
+        'DELETE FROM account_keys WHERE account_id = ? AND key_id = ?',
         [accountId, keyId]
       );
 
@@ -1007,7 +981,7 @@ router.delete('/:id/unassign-key/:keyId', async (req, res) => {
       // Check if this key has any remaining active assignments
       try {
         const remainingAssignments = await executeQuery(
-          'SELECT COUNT(*) as count FROM account_keys WHERE key_id = ? AND is_active = 1',
+          'SELECT COUNT(*) as count FROM account_keys WHERE key_id = ?',
           [keyId]
         );
 
