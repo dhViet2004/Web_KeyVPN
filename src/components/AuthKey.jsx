@@ -47,13 +47,10 @@ const AuthKey = () => {
   const autoAssignKey = async (keyCode) => {
     try {
       setAssigningKey(true)
-      setAssignmentMessage('🔍 Đang tìm tài khoản VPN trống phù hợp với loại key...')
 
       const response = await publicAPI.autoAssignKey(keyCode)
 
       if (response.success) {
-        setAssignmentMessage(`✅ Đã tìm thấy và gán key vào tài khoản: ${response.data.account.username}`)
-        setTimeout(() => setAssignmentMessage(''), 5000)
         return true
       } else {
         // Kiểm tra nếu key đã được gán trước đó
@@ -119,7 +116,6 @@ const AuthKey = () => {
           }
         } else {
           // Key chưa có accounts - tự động tìm và gán vào tài khoản phù hợp
-          setAssignmentMessage(`🔍 Key hợp lệ nhưng chưa được gán. Đang tìm tài khoản VPN phù hợp với loại ${response.data.key_type || 'key'}...`)
           
           // Thử tự động gán key
           const autoAssigned = await autoAssignKey(key.trim())
@@ -131,12 +127,6 @@ const AuthKey = () => {
               if (updatedResponse.success) {
                 setKeyInfo(updatedResponse.data)
                 setDays(updatedResponse.data.days_remaining || 0)
-                
-                // Hiển thị thông báo thành công nếu có accounts
-                if (updatedResponse.data.accounts && updatedResponse.data.accounts.length > 0) {
-                  setAssignmentMessage(`🎉 Key ${updatedResponse.data.key_type || 'key'} đã được gán thành công!`)
-                  setTimeout(() => setAssignmentMessage(''), 5000)
-                }
               }
             } catch (updateError) {
               console.error('Error updating key info after assignment:', updateError)

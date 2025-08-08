@@ -30,6 +30,17 @@ async function cleanupAccountKeys() {
       console.log(`✅ Removed ${orphanedAccountsResult.data.affectedRows || 0} orphaned account references`);
     }
     
+    // Step 2a: Clean up orphaned key_usage_history records
+    const orphanedHistoryResult = await executeQuery(`
+      DELETE kuh FROM key_usage_history kuh
+      LEFT JOIN vpn_keys vk ON kuh.key_id = vk.id
+      WHERE vk.id IS NULL
+    `);
+    
+    if (orphanedHistoryResult.success) {
+      console.log(`✅ Removed ${orphanedHistoryResult.data.affectedRows || 0} orphaned history records`);
+    }
+    
     // Step 3: Fix duplicate active assignments (keep only the most recent one)
     const duplicatesResult = await executeQuery(`
       UPDATE account_keys ak1
@@ -75,6 +86,7 @@ async function cleanupAccountKeys() {
       details: {
         orphanedKeys: orphanedKeysResult.data?.affectedRows || 0,
         orphanedAccounts: orphanedAccountsResult.data?.affectedRows || 0,
+        orphanedHistory: orphanedHistoryResult.data?.affectedRows || 0,
         duplicatesFixed: duplicatesResult.data?.affectedRows || 0,
         statusesUpdated: statusUpdateResult.data?.affectedRows || 0
       }
@@ -97,7 +109,30 @@ async function cleanupKeyAssignments(keyId) {
   console.log(`🧹 Cleaning up assignments for key ${keyId}...`);
   
   try {
-    // Remove all assignments for this key
+    // First, set all assignments for this key to inactive to avoid foreign key issues
+    const inactiveResult = await executeQuery(
+      'UPDATE account_keys SET is_active = 0 WHERE key_id = ? AND is_active = 1',
+      [keyId]
+    );
+    
+    if (inactiveResult.success && inactiveResult.data.affectedRows > 0) {
+      console.log(`✅ Set ${inactiveResult.data.affectedRows} assignments to inactive for key ${keyId}`);
+    }
+    
+    // Clean up key_usage_history records that might prevent deletion
+    const historyResult = await executeQuery(
+      'DELETE FROM key_usage_history WHERE key_id = ?',
+      [keyId]
+    );
+    
+    if (historyResult.success) {
+      console.log(`✅ Removed ${historyResult.data.affectedRows || 0} history records for key ${keyId}`);
+    } else {
+      console.warn(`⚠️ Failed to remove history records for key ${keyId}:`, historyResult.error);
+      // Continue anyway, might not exist
+    }
+    
+    // Then remove all assignments for this key (both active and inactive)
     const result = await executeQuery(
       'DELETE FROM account_keys WHERE key_id = ?',
       [keyId]
@@ -105,7 +140,10 @@ async function cleanupKeyAssignments(keyId) {
     
     if (result.success) {
       console.log(`✅ Removed ${result.data.affectedRows || 0} assignments for key ${keyId}`);
-      return { success: true, affectedRows: result.data.affectedRows || 0 };
+      return { 
+        success: true, 
+        affectedRows: (result.data.affectedRows || 0) + (historyResult.data?.affectedRows || 0)
+      };
     } else {
       console.error(`❌ Failed to clean assignments for key ${keyId}:`, result.error);
       return { success: false, error: result.error };

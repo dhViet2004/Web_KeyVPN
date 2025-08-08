@@ -356,15 +356,53 @@ router.delete('/:id', async (req, res) => {
     console.log('--- DEBUG DELETE KEY ---');
     console.log('Delete key id:', id);
 
+    // Validate key ID
+    if (!id || isNaN(parseInt(id))) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid key ID'
+      });
+    }
+
+    // Check if key exists before attempting deletion
+    const keyExists = await executeQuery(
+      'SELECT id, code, status FROM vpn_keys WHERE id = ?',
+      [id]
+    );
+
+    if (!keyExists.success) {
+      console.error('Error checking key existence:', keyExists.error);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error while checking key existence'
+      });
+    }
+
+    if (keyExists.data.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Key not found'
+      });
+    }
+
+    const keyInfo = keyExists.data[0];
+    console.log(`🔍 Found key to delete: ${keyInfo.code} (status: ${keyInfo.status})`);
+
     // Clean up account_keys assignments BEFORE deleting the key
     console.log(`🧹 Cleaning up assignments for key ${id} before deletion...`);
-    const cleanupResult = await cleanupKeyAssignments(id);
-    
-    if (cleanupResult.success) {
-      console.log(`✅ Cleaned up ${cleanupResult.affectedRows} assignments for key ${id}`);
-    } else {
-      console.warn(`⚠️ Cleanup failed for key ${id}:`, cleanupResult.error);
-      // Continue with deletion even if cleanup fails
+    let cleanupResult;
+    try {
+      cleanupResult = await cleanupKeyAssignments(id);
+      if (cleanupResult.success) {
+        console.log(`✅ Cleaned up ${cleanupResult.affectedRows} assignments for key ${id}`);
+      } else {
+        console.warn(`⚠️ Cleanup failed for key ${id}:`, cleanupResult.error);
+        // Continue with deletion even if cleanup fails
+      }
+    } catch (cleanupError) {
+      console.error(`❌ Cleanup error for key ${id}:`, cleanupError);
+      // Continue with deletion even if cleanup throws an error
+      cleanupResult = { success: false, error: cleanupError.message };
     }
 
     const result = await executeQuery(
@@ -374,29 +412,26 @@ router.delete('/:id', async (req, res) => {
 
     if (!result.success) {
       console.error('Delete key SQL error:', result.error);
-    }
-
-    if (!result.success) {
       return res.status(500).json({
         success: false,
-        message: 'Failed to delete key'
+        message: 'Failed to delete key: ' + (result.error || 'Database error')
       });
     }
 
-    if (result.data.affectedRows === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Key not found'
-      });
-    }
+    console.log(`✅ Successfully deleted key ${keyInfo.code} (ID: ${id})`);
 
     // Run general cleanup after deletion to ensure data consistency
     console.log('🧹 Running general account_keys cleanup after key deletion...');
-    const generalCleanup = await cleanupAccountKeys();
-    if (generalCleanup.success) {
-      console.log('✅ General cleanup completed after key deletion');
-    } else {
-      console.warn('⚠️ General cleanup failed after key deletion:', generalCleanup.error);
+    try {
+      const generalCleanup = await cleanupAccountKeys();
+      if (generalCleanup.success) {
+        console.log('✅ General cleanup completed after key deletion');
+      } else {
+        console.warn('⚠️ General cleanup failed after key deletion:', generalCleanup.error);
+      }
+    } catch (generalCleanupError) {
+      console.error('❌ General cleanup error after key deletion:', generalCleanupError);
+      // Don't let cleanup errors affect the response since key deletion already succeeded
     }
 
     res.json({
@@ -404,7 +439,7 @@ router.delete('/:id', async (req, res) => {
       message: 'Key deleted successfully',
       cleanup: {
         assignmentsRemoved: cleanupResult.success ? cleanupResult.affectedRows : 0,
-        generalCleanup: generalCleanup.success
+        generalCleanupAttempted: true // Just indicate that cleanup was attempted
       }
     });
 
