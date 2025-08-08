@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
 import { Table, Button, Input, Space, Modal, DatePicker, Upload, Typography, Popconfirm, App, Select, InputNumber, Checkbox, Spin, Alert, Tag } from 'antd'
-import { EyeOutlined, EditOutlined, DeleteOutlined, UploadOutlined, PlusOutlined, FilterOutlined, CalendarOutlined, ClockCircleOutlined, ReloadOutlined, KeyOutlined } from '@ant-design/icons'
+import { EyeOutlined, EditOutlined, DeleteOutlined, UploadOutlined, PlusOutlined, FilterOutlined, CalendarOutlined, ClockCircleOutlined, ReloadOutlined, KeyOutlined, SearchOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useAccounts } from '../hooks/useAccounts'
 import { accountsAPI } from '../services/api'
 
-const { Title } = Typography
+const { Title, Text } = Typography
+const { Search } = Input
 
 const Account = () => {
   const { message: messageApi } = App.useApp()
@@ -38,6 +39,7 @@ const Account = () => {
   const [accountKeys, setAccountKeys] = useState([])
   const [availableKeys, setAvailableKeys] = useState([])
   const [keyLoading, setKeyLoading] = useState(false)
+  const [searchText, setSearchText] = useState('') // State cho tìm kiếm
 
   // Transform backend accounts to frontend format
   useEffect(() => {
@@ -87,6 +89,23 @@ const Account = () => {
     fetchAccounts({ timeFilter: 'all' });
   }, [fetchAccounts])
 
+  // Keyboard shortcut cho tìm kiếm (Ctrl/Cmd + K)
+  useEffect(() => {
+    const handleKeyPress = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault()
+        // Focus vào search input
+        const searchInput = document.querySelector('input[placeholder*="Tìm kiếm"]')
+        if (searchInput) {
+          searchInput.focus()
+        }
+      }
+    }
+    
+    window.addEventListener('keydown', handleKeyPress)
+    return () => window.removeEventListener('keydown', handleKeyPress)
+  }, [])
+
   // Đếm ngược thời gian
   const getCountdown = (expire) => {
     const now = dayjs()
@@ -100,30 +119,66 @@ const Account = () => {
     return `${d} ngày ${h} giờ ${m} phút ${s} giây`
   }
 
-  // Lọc tài khoản theo thời gian - now using backend API
+  // Lọc tài khoản theo thời gian và tìm kiếm - now using backend API
   const getFilteredAccounts = () => {
-    // For 'flexible' and 'custom' filters, we still need client-side filtering
-    // as the backend doesn't support these complex filters yet
+    let filtered = accounts;
+    
+    // Áp dụng bộ lọc thời gian trước
     const now = dayjs()
     switch (timeFilter) {
       case 'custom':
-        if (!customTimeRange.start || !customTimeRange.end) return accounts
-        return accounts.filter(acc => {
-          const expireDate = dayjs(acc.expire)
-          return expireDate.isAfter(customTimeRange.start) && expireDate.isBefore(customTimeRange.end)
-        })
+        if (customTimeRange.start && customTimeRange.end) {
+          filtered = filtered.filter(acc => {
+            const expireDate = dayjs(acc.expire)
+            return expireDate.isAfter(customTimeRange.start) && expireDate.isBefore(customTimeRange.end)
+          })
+        }
+        break
       case 'flexible': {
         const totalSeconds = flexibleTime.days * 86400 + flexibleTime.hours * 3600 + flexibleTime.minutes * 60 + flexibleTime.seconds
-        if (totalSeconds === 0) return accounts
-        return accounts.filter(acc => {
-          const diff = dayjs(acc.expire).diff(now, 'second')
-          return diff > 0 && diff <= totalSeconds
-        })
+        if (totalSeconds > 0) {
+          filtered = filtered.filter(acc => {
+            const diff = dayjs(acc.expire).diff(now, 'second')
+            return diff > 0 && diff <= totalSeconds
+          })
+        }
+        break
       }
       default:
         // For standard filters, backend already filtered the data
-        return accounts
+        break
     }
+    
+    // Áp dụng bộ lọc tìm kiếm
+    if (searchText.trim()) {
+      const searchLower = searchText.toLowerCase().trim()
+      filtered = filtered.filter(acc => {
+        // Tìm kiếm trong các trường cơ bản
+        const basicMatch = acc.username.toLowerCase().includes(searchLower) ||
+          acc.password.toLowerCase().includes(searchLower) ||
+          (acc.keyCode && acc.keyCode.toLowerCase().includes(searchLower)) ||
+          (acc.keyGroup && acc.keyGroup.toLowerCase().includes(searchLower)) ||
+          acc.id.toString().includes(searchLower)
+        
+        // Tìm kiếm theo trạng thái (tiếng Việt và tiếng Anh)
+        const statusMatch = 
+          (searchLower.includes('expired') || searchLower.includes('hết hạn')) && 
+          dayjs(acc.expire).diff(dayjs(), 'second') <= 0
+        
+        const activeMatch = 
+          (searchLower.includes('active') || searchLower.includes('hoạt động')) && 
+          dayjs(acc.expire).diff(dayjs(), 'second') > 0
+          
+        // Tìm kiếm theo thời gian còn lại
+        const timeMatch = 
+          (searchLower.includes('sắp hết hạn') || searchLower.includes('expiring')) &&
+          dayjs(acc.expire).diff(dayjs(), 'hour') <= 24 && dayjs(acc.expire).diff(dayjs(), 'second') > 0
+        
+        return basicMatch || statusMatch || activeMatch || timeMatch
+      })
+    }
+    
+    return filtered
   }
 
   // Fetch accounts when time filter changes (for backend-supported filters)
@@ -522,6 +577,20 @@ const Account = () => {
     }
   }
 
+  // Hàm highlight text khi tìm kiếm
+  const highlightText = (text, searchTerm) => {
+    if (!searchTerm || !text) return text
+    
+    const parts = text.toString().split(new RegExp(`(${searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'))
+    return parts.map((part, index) => 
+      part.toLowerCase() === searchTerm.toLowerCase() ? (
+        <mark key={index} className="bg-yellow-200 px-1 rounded">{part}</mark>
+      ) : (
+        part
+      )
+    )
+  }
+
   // Table columns
   const allFilteredSelected = filteredAccounts.length > 0 && filteredAccounts.every(a => a.selected)
   const someFilteredSelected = filteredAccounts.some(a => a.selected)
@@ -538,11 +607,23 @@ const Account = () => {
       width: 40,
       render: (_, record) => <Checkbox checked={record.selected} onChange={() => handleSelect(record.id)} />
     },
-    { title: 'Tài khoản', dataIndex: 'username', key: 'username', render: v => <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{v}</span> },
-    { title: 'Mật khẩu', dataIndex: 'password', key: 'password', render: v => <span style={{ fontFamily: 'monospace' }}>{v}</span> },
+    { title: 'Tài khoản', dataIndex: 'username', key: 'username', render: v => (
+      <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>
+        {highlightText(v, searchText)}
+      </span>
+    )},
+    { title: 'Mật khẩu', dataIndex: 'password', key: 'password', render: v => (
+      <span style={{ fontFamily: 'monospace' }}>
+        {highlightText(v, searchText)}
+      </span>
+    )},
     { title: 'Thời gian còn lại', dataIndex: 'expire', key: 'expire', render: v => getCountdown(v) },
     // Thêm cột Key đã gán
-    { title: 'Key đã gán', dataIndex: 'assigned_keys', key: 'assigned_keys', render: v => <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{v}</span> },
+    { title: 'Key đã gán', dataIndex: 'assigned_keys', key: 'assigned_keys', render: v => (
+      <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>
+        {highlightText(v, searchText)}
+      </span>
+    )},
     {
       title: 'Thao tác', key: 'actions', render: (_, record) => (
         <Space>
@@ -616,13 +697,23 @@ const Account = () => {
           <Spin size="large" />
         </div>
       )}
+
+      <Space className="mb-4 w-full" wrap>
+        <Upload beforeUpload={handleUpload} showUploadList={false} accept=".txt">
+          <Button icon={<UploadOutlined />} loading={uploading}>Tải lên file TXT</Button>
+        </Upload>
+        <Button icon={<PlusOutlined />} onClick={() => setEditing({id: null, username: '', password: 'xincamon', expire: dayjs().add(72, 'hour').toISOString()})}>Thêm tài khoản</Button>
+        <Button icon={<DeleteOutlined />} danger onClick={handleDeleteSelected}>Xóa tài khoản đã chọn</Button>
+        <Button icon={<CalendarOutlined />} type="primary" onClick={handleBatchEditExpire}>Chỉnh sửa thời gian hàng loạt</Button>
+      </Space>
       
-      {/* Bộ lọc theo thời gian */}
+      {/* Bộ lọc theo thời gian và tìm kiếm */}
       <div className="mb-4 p-4 bg-gray-50 rounded-lg">
         <div className="flex items-center gap-2 mb-3">
           <FilterOutlined />
-          <span className="font-medium">Lọc theo thời gian:</span>
+          <span className="font-medium">Bộ lọc và tìm kiếm:</span>
         </div>
+        
         <div className="flex flex-wrap items-center gap-3 mb-2">
           <Select
             value={timeFilter}
@@ -642,22 +733,28 @@ const Account = () => {
               { value: 'custom', label: '🎯 Tùy chỉnh khoảng thời gian' },
             ]}
           />
-          {timeFilter !== 'all' && (
+          {(timeFilter !== 'all' || searchText) && (
             <Button 
               size="small" 
               onClick={() => {
                 setTimeFilter('all')
+                setSearchText('')
                 setCustomTimeRange({ start: null, end: null })
                 setFlexibleTime({ days: 0, hours: 0, minutes: 0, seconds: 0 })
                 fetchAccounts({ timeFilter: 'all' })
               }}
-              title="Reset bộ lọc"
+              title="Reset tất cả bộ lọc và tìm kiếm"
             >
-              Hiển thị tất cả
+              Reset tất cả
             </Button>
           )}
           <span className="text-gray-600">
             Hiển thị <strong className="text-blue-600">{filteredAccounts.length}</strong>/<strong>{accounts.length}</strong> tài khoản
+            {searchText && (
+              <span className="text-orange-600 ml-2">
+                (đã lọc theo từ khóa: "{searchText}")
+              </span>
+            )}
           </span>
         </div>
         
@@ -959,16 +1056,46 @@ const Account = () => {
             </div>
           </div>
         )}
-      </div>
 
-      <Space className="mb-4 w-full" wrap>
-        <Upload beforeUpload={handleUpload} showUploadList={false} accept=".txt">
-          <Button icon={<UploadOutlined />} loading={uploading}>Tải lên file TXT</Button>
-        </Upload>
-        <Button icon={<PlusOutlined />} onClick={() => setEditing({id: null, username: '', password: 'xincamon', expire: dayjs().add(72, 'hour').toISOString()})}>Thêm tài khoản</Button>
-        <Button icon={<DeleteOutlined />} danger onClick={handleDeleteSelected}>Xóa tài khoản đã chọn</Button>
-        <Button icon={<CalendarOutlined />} type="primary" onClick={handleBatchEditExpire}>Chỉnh sửa thời gian hàng loạt</Button>
-      </Space>
+        {/* Thanh tìm kiếm */}
+        <div className="mt-3">
+          <Search
+            placeholder="Tìm kiếm theo tên tài khoản, mật khẩu, key code, nhóm key hoặc ID... (Ctrl+K)"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            onSearch={(value) => setSearchText(value)}
+            allowClear
+            enterButton={<SearchOutlined />}
+            size="large"
+            style={{ width: '100%' }}
+          />
+          
+          {searchText && (
+            <div className="mt-2">
+              <Text type="secondary" className="text-sm">
+                Tìm thấy <strong className="text-blue-600">{filteredAccounts.length}</strong> tài khoản khớp với "{searchText}"
+                {filteredAccounts.length > 0 && (
+                  <Button 
+                    type="link" 
+                    size="small" 
+                    className="text-xs ml-2"
+                    onClick={() => {
+                      const allFilteredSelected = filteredAccounts.every(a => a.selected)
+                      const filteredIds = filteredAccounts.map(a => a.id)
+                      setAccounts(accs => accs.map(a => 
+                        filteredIds.includes(a.id) ? { ...a, selected: !allFilteredSelected } : a
+                      ))
+                    }}
+                  >
+                    {filteredAccounts.every(a => a.selected) ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
+                  </Button>
+                )}
+              </Text>
+            </div>
+          )}
+        </div>
+      </div>
+      
       <div className="overflow-x-auto rounded-xl shadow-sm">
         <Table
           columns={columns}
