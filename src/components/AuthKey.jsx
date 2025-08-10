@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { FaKey, FaGift, FaRegClock, FaCheckCircle, FaExclamationTriangle, FaTimesCircle, FaUserPlus } from 'react-icons/fa'
 import NotificationModal from './NotificationModal'
 import { useSettings } from '../hooks/useSettings'
-import { publicAPI, utils } from '../services/api'
+import { publicAPI, giftAPI, utils } from '../services/api'
 
 const getStatusColor = (days, error) => {
   if (error) return 'bg-red-50 text-red-700 border-red-300'
@@ -106,13 +106,20 @@ const AuthKey = () => {
           if (isRecheck) {
             // User nhập lại key để kiểm tra - hiển thị thông báo có mật khẩu
             const accountInfo = response.data.accounts[0]
-            setAssignmentMessage(`🔑 Key đã được gán! Tài khoản: ${accountInfo.username} | Mật khẩu: ${accountInfo.password}`)
+            const daysLeft = response.data.days_remaining || 0
+            setAssignmentMessage(
+              `🔑 Key đã được gán! Tài khoản: ${accountInfo.username} | Mật khẩu: ${accountInfo.password} | Còn lại: ${daysLeft} ngày`
+            )
             setTimeout(() => setAssignmentMessage(''), 10000)
           } else {
             // Lần đầu nhập key - hiển thị thông báo có mật khẩu luôn
             const accountInfo = response.data.accounts[0]
-            setAssignmentMessage(`🎉 Key hợp lệ và đã được gán! Tài khoản: ${accountInfo.username} | Mật khẩu: ${accountInfo.password}`)
-            setTimeout(() => setAssignmentMessage(''), 10000)
+            const daysLeft = response.data.days_remaining || 0
+            const statusText = daysLeft > 0 ? `còn ${daysLeft} ngày` : 'đã hết hạn'
+            setAssignmentMessage(
+              `🎉 Key hợp lệ và đã được gán! Tài khoản: ${accountInfo.username} | Mật khẩu: ${accountInfo.password} | Trạng thái: ${statusText}`
+            )
+            setTimeout(() => setAssignmentMessage(''), 15000) // Tăng thời gian hiển thị
           }
         } else {
           // Key chưa có accounts - tự động tìm và gán vào tài khoản phù hợp
@@ -124,17 +131,38 @@ const AuthKey = () => {
             // Cập nhật lại thông tin key sau khi gán
             try {
               const updatedResponse = await publicAPI.checkKey(key.trim())
-              if (updatedResponse.success) {
+              if (updatedResponse.success && updatedResponse.data) {
                 setKeyInfo(updatedResponse.data)
                 setDays(updatedResponse.data.days_remaining || 0)
+                
+                // Hiển thị thông báo gán thành công với thông tin chi tiết
+                if (updatedResponse.data.accounts && updatedResponse.data.accounts.length > 0) {
+                  const accountInfo = updatedResponse.data.accounts[0]
+                  const daysLeft = updatedResponse.data.days_remaining || 0
+                  const statusText = daysLeft > 0 ? `còn ${daysLeft} ngày` : 'đã hết hạn'
+                  const keyType = updatedResponse.data.key_type || 'key'
+                  
+                  setAssignmentMessage(
+                    `✅ Key đã được tự động gán thành công!\n` +
+                    `🔐 Tài khoản VPN: ${accountInfo.username}\n` +
+                    `🔑 Mật khẩu: ${accountInfo.password}\n` +
+                    `⏰ Trạng thái: ${statusText}\n` +
+                    `🏷️ Loại key: ${keyType}`
+                  )
+                  setTimeout(() => setAssignmentMessage(''), 15000)
+                }
               }
             } catch (updateError) {
               console.error('Error updating key info after assignment:', updateError)
             }
           } else {
             // Không thể tự động gán key
-            setAssignmentMessage(`❌ Không tìm thấy tài khoản VPN trống phù hợp với loại ${response.data.key_type || 'key'}. Vui lòng liên hệ admin.`)
-            setTimeout(() => setAssignmentMessage(''), 8000)
+            const keyType = response.data.key_type || 'key'
+            setAssignmentMessage(
+              `❌ Không tìm thấy tài khoản VPN trống phù hợp với loại ${keyType}.\n` +
+              `💡 Vui lòng liên hệ admin để được hỗ trợ.`
+            )
+            setTimeout(() => setAssignmentMessage(''), 10000)
           }
         }
         
@@ -162,19 +190,34 @@ const AuthKey = () => {
     
     setLoading(true)
     try {
-      const response = await publicAPI.useGiftCode(gift.trim(), key.trim())
+      // Use the new applyGift API method
+      const response = await giftAPI.applyGift(gift.trim(), key.trim())
       
       if (response.success) {
-        // Refresh key info
+        // Refresh key info after applying gift code
         await handleSubmit(e)
         setGift('')
-        alert(`Đã thêm ${response.data.bonusDays} ngày vào key của bạn!`)
+        
+        // Show detailed success message
+        const { key_code, bonus_days, remaining_uses } = response.data || {}
+        const successMessage = [
+          `🎉 Gift code đã được áp dụng thành công!`,
+          `📅 Đã cộng thêm ${bonus_days} ngày cho key: ${key_code}`,
+          remaining_uses > 0 
+            ? `🔄 Gift code này còn lại ${remaining_uses} lượt sử dụng`
+            : `⚠️ Gift code này đã hết lượt sử dụng`
+        ].join('\n\n')
+        
+        alert(successMessage)
       } else {
-        alert(response.message || 'Gift code không hợp lệ!')
+        alert(`❌ ${response.message || 'Gift code không hợp lệ hoặc đã hết lượt sử dụng!'}`)
       }
     } catch (error) {
       console.error('Gift code error:', error)
-      alert(utils.handleError(error))
+      const errorMessage = error.message?.includes('undefined:') 
+        ? error.message.replace('undefined: ', '') 
+        : utils.handleError(error)
+      alert(`❌ Lỗi: ${errorMessage}`)
     } finally {
       setLoading(false)
     }
@@ -208,13 +251,15 @@ const AuthKey = () => {
       
       {/* Hiển thị thông báo gán key tự động */}
       {assignmentMessage && (
-        <div className="border-l-4 border-orange-400 bg-orange-50 p-3 mb-4 flex items-center gap-2 text-base rounded-xl shadow-sm">
+        <div className="border-l-4 border-orange-400 bg-orange-50 p-3 mb-4 flex items-start gap-2 text-base rounded-xl shadow-sm">
           {assigningKey ? (
-            <FaKey className="text-orange-500 animate-spin" size={18} />
+            <FaKey className="text-orange-500 animate-spin mt-1" size={18} />
           ) : (
-            <FaUserPlus className="text-orange-500" size={18} />
+            <FaUserPlus className="text-orange-500 mt-1" size={18} />
           )}
-          <span className="text-orange-700">{assignmentMessage}</span>
+          <div className="text-orange-700 whitespace-pre-line leading-relaxed">
+            {assignmentMessage}
+          </div>
         </div>
       )}
       

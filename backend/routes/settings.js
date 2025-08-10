@@ -230,14 +230,45 @@ router.put('/notifications', [
       position = 'before'
     } = req.body;
 
-    // Deactivate current notifications first
-    await executeQuery('UPDATE notifications SET is_active = 0 WHERE is_active = 1');
+    // Kiểm tra xem có notification hiện có không
+    const existingNotification = await executeQuery(`
+      SELECT id FROM notifications 
+      WHERE is_active = 1 
+      ORDER BY created_at DESC 
+      LIMIT 1
+    `);
 
-    // Create new notification
-    const result = await executeQuery(`
-      INSERT INTO notifications (title, content, type, target_audience, display_count, has_link, link_url, link_text, position, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [title, content, type, target_audience, display_count, has_link, link_url, link_text, position, req.user.id]);
+    let result;
+    let notificationId;
+
+    if (existingNotification.success && existingNotification.data.length > 0) {
+      // UPDATE notification hiện có
+      notificationId = existingNotification.data[0].id;
+      result = await executeQuery(`
+        UPDATE notifications 
+        SET title = ?, 
+            content = ?, 
+            type = ?, 
+            target_audience = ?, 
+            display_count = ?, 
+            has_link = ?, 
+            link_url = ?, 
+            link_text = ?, 
+            position = ?,
+            updated_at = NOW()
+        WHERE id = ?
+      `, [title, content, type, target_audience, display_count, has_link, 
+          link_url || null, link_text || null, position, notificationId]);
+    } else {
+      // INSERT notification mới nếu chưa có
+      result = await executeQuery(`
+        INSERT INTO notifications (title, content, type, target_audience, display_count, has_link, link_url, link_text, position, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [title, content, type, target_audience, display_count, has_link, 
+          link_url || null, link_text || null, position, req.user.id]);
+      
+      notificationId = result.data?.insertId;
+    }
 
     if (!result.success) {
       return res.status(500).json({
@@ -250,7 +281,7 @@ router.put('/notifications', [
       success: true,
       message: 'Notification updated successfully',
       data: {
-        id: result.data.insertId,
+        id: notificationId,
         title,
         content,
         type
@@ -259,6 +290,37 @@ router.put('/notifications', [
 
   } catch (error) {
     console.error('Update notification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   PUT /api/settings/notifications/disable
+// @desc    Disable all notifications
+// @access  Private
+router.put('/notifications/disable', async (req, res) => {
+  try {
+    // Deactivate all notifications
+    const result = await executeQuery(
+      'UPDATE notifications SET is_active = 0 WHERE is_active = 1'
+    );
+
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to disable notifications'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'All notifications disabled successfully'
+    });
+
+  } catch (error) {
+    console.error('Disable notifications error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error'

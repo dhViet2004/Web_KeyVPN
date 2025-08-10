@@ -26,6 +26,9 @@ class ApiClient {
 
     if (this.token) {
       headers.Authorization = `Bearer ${this.token}`;
+      console.log('API Client - Token present:', this.token.substring(0, 10) + '...');
+    } else {
+      console.log('API Client - No token found in localStorage');
     }
 
     return headers;
@@ -53,7 +56,10 @@ class ApiClient {
           window.location.href = '/admin-login';
           throw new Error('Session expired. Please login again.');
         }
-        throw new Error(data.message || `HTTP error! status: ${response.status}`);
+        
+        // Log detailed error for debugging
+        console.log('API Error Details:', data);
+        throw new Error(data.details || data.message || `HTTP error! status: ${response.status}`);
       }
 
       return data;
@@ -192,7 +198,10 @@ export const giftAPI = {
   // Validate gift code
   validateGift: (code) => apiClient.post('/gift/validate', { code }),
 
-  // Use gift code
+  // Apply gift code to key
+  applyGift: (code, key_code) => apiClient.post('/gift/apply', { code, key_code }),
+
+  // Use gift code (deprecated - use applyGift instead)
   useGift: (giftCode, keyCode) =>
     apiClient.post('/gift/use', { giftCode, keyCode }),
 
@@ -201,6 +210,12 @@ export const giftAPI = {
 
   // Create gift code (admin)
   createGift: (giftData) => apiClient.post('/gift/create', giftData),
+
+  // Get gift settings
+  getGiftSettings: () => apiClient.get('/gift/settings'),
+
+  // Update gift settings  
+  updateGiftSettings: (settings) => apiClient.put('/gift/settings', settings),
 };
 
 // Settings API

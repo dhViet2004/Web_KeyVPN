@@ -1,4 +1,5 @@
-import { Button, Input, InputNumber, Switch, Select, Typography, Card, Tabs, Form, Space, Divider, App } from 'antd'
+import { useEffect, useState } from 'react'
+import { Button, Input, InputNumber, Switch, Select, Typography, Card, Tabs, Form, Space, Divider, App, Table, Modal, Popconfirm } from 'antd'
 import { 
   SettingOutlined, 
   NotificationOutlined, 
@@ -8,400 +9,752 @@ import {
   SaveOutlined,
   ReloadOutlined,
   EyeOutlined,
-  LinkOutlined
+  LinkOutlined,
+  PlusOutlined,
+  DeleteOutlined,
+  CopyOutlined
 } from '@ant-design/icons'
 import { useSettings } from '../hooks/useSettings'
+import { settingsAPI, giftAPI } from '../services/api'
 
 const { Title, Text } = Typography
 const { TextArea } = Input
 const { Option } = Select
-const { TabPane } = Tabs
 
 function Settings() {
   const { settings, updateSettings, resetSettings } = useSettings()
   const { message: messageApi } = App.useApp()
   const [form] = Form.useForm()
+  const [giftCodes, setGiftCodes] = useState([])
+  const [loadingGifts, setLoadingGifts] = useState(false)
+  const [createGiftModal, setCreateGiftModal] = useState(false)
 
-  // Lưu settings
-  const saveSettings = () => {
-    // Hiển thị thông báo thành công ngay lập tức
-    messageApi.success('Cài đặt đã được lưu thành công!')
+  // Load notification từ database khi component mount
+  useEffect(() => {
+    const loadSettingsFromDatabase = async () => {
+      try {
+        // Load notification settings
+        const isDefaultNotification = 
+          settings.notification.title === 'THÔNG BÁO HỆ THỐNG' && 
+          settings.notification.content === 'Chào mừng bạn đến với KeyVPN Tool!'
+        
+        if (isDefaultNotification) {
+          const notificationResponse = await settingsAPI.getNotifications()
+          if (notificationResponse.success && notificationResponse.data) {
+            const dbNotification = notificationResponse.data
+            updateSettings({
+              notification: {
+                ...settings.notification,
+                title: dbNotification.title || settings.notification.title,
+                content: dbNotification.content || settings.notification.content,
+                position: dbNotification.position || settings.notification.position,
+                displayCount: dbNotification.display_count || settings.notification.displayCount,
+                hasLink: dbNotification.has_link || settings.notification.hasLink,
+                linkUrl: dbNotification.link_url || settings.notification.linkUrl,
+                linkText: dbNotification.link_text || settings.notification.linkText
+              }
+            })
+          }
+        }
+
+        // Load gift key settings
+        const giftResponse = await giftAPI.getGiftSettings()
+        if (giftResponse.success && giftResponse.data) {
+          updateSettings({
+            giftKey: {
+              defaultExpiration: giftResponse.data.defaultExpiration || 30,
+              allowMultipleUse: giftResponse.data.allowMultipleUse || false,
+              maxUses: giftResponse.data.maxUses || 1
+            }
+          })
+        }
+
+      } catch (error) {
+        console.error('Error loading settings from database:', error)
+      }
+    }
+
+    loadSettingsFromDatabase()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // Chỉ chạy một lần khi component mount
+
+  // Validation functions
+  const isValidUrl = (string) => {
+    try {
+      new URL(string);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const updateNotification = (newData) => {
+    updateSettings({
+      notification: { ...settings.notification, ...newData }
+    })
+  }
+
+  const validateNotificationForm = () => {
+    const errors = []
     
-    // Force save tất cả settings hiện tại với delay nhỏ
-    setTimeout(() => {
-      updateSettings({ ...settings })
-    }, 100)
+    if (!settings.notification.title.trim()) {
+      errors.push('Tiêu đề thông báo không được để trống')
+    }
+    
+    if (!settings.notification.content.trim()) {
+      errors.push('Nội dung thông báo không được để trống')
+    }
+    
+    if (settings.notification.hasLink && settings.notification.linkUrl) {
+      if (!isValidUrl(settings.notification.linkUrl)) {
+        errors.push('URL link không hợp lệ')
+      }
+    }
+    
+    if (settings.notification.hasLink && !settings.notification.linkText.trim()) {
+      errors.push('Text link không được để trống khi có link')
+    }
+    
+    return errors
   }
 
-  // Reset về mặc định
-  const handleResetSettings = () => {
-    resetSettings()
-    form.resetFields()
-    messageApi.success('Đã reset về cài đặt mặc định!')
+  // Gift codes management functions
+  const loadGiftCodes = async () => {
+    setLoadingGifts(true)
+    try {
+      const response = await giftAPI.getGiftCodes()
+      if (response.success) {
+        setGiftCodes(response.data || [])
+      }
+    } catch (error) {
+      console.error('Error loading gift codes:', error)
+      messageApi.error('Lỗi khi tải danh sách gift codes')
+    }
+    setLoadingGifts(false)
   }
 
-  // Update notification
-  const updateNotification = (updates) => {
-    updateSettings({
-      notification: { ...settings.notification, ...updates }
-    })
+  const generateRandomCode = () => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    let result = ''
+    for (let i = 0; i < 8; i++) {
+      result += chars.charAt(Math.floor(Math.random() * chars.length))
+    }
+    return result
   }
 
-  // Update key assign time
-  const updateKeyAssignTime = (time) => {
-    updateSettings({ keyAssignTime: time })
+  const createGiftCode = async (values) => {
+    try {
+      const giftData = {
+        code: values.code || generateRandomCode(),
+        bonus_days: values.bonusDays || settings.giftKey.defaultExpiration,
+        max_uses: values.maxUses || (settings.giftKey.allowMultipleUse ? settings.giftKey.maxUses : 1),
+        expires_at: values.expiresAt || null
+      }
+
+      console.log('Creating gift code with data:', giftData) // Debug log
+
+      const response = await giftAPI.createGift(giftData)
+      if (response.success) {
+        messageApi.success('Tạo gift code thành công!')
+        setCreateGiftModal(false)
+        loadGiftCodes() // Reload list
+        
+        // Copy code to clipboard
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(giftData.code)
+          messageApi.info('Đã copy gift code vào clipboard!')
+        }
+      } else {
+        messageApi.error(response.message || 'Lỗi khi tạo gift code')
+      }
+    } catch (error) {
+      console.error('Error creating gift code:', error)
+      if (error.message.includes('Validation failed')) {
+        messageApi.error('Dữ liệu không hợp lệ. Vui lòng kiểm tra lại cài đặt.')
+      } else {
+        messageApi.error('Lỗi khi tạo gift code')
+      }
+    }
   }
 
-  // Update gift code
-  const updateGiftCode = (updates) => {
-    updateSettings({
-      giftCode: { ...settings.giftCode, ...updates }
-    })
+  const copyToClipboard = (text) => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text)
+      messageApi.success('Đã copy vào clipboard!')
+    }
   }
 
-  // Update tool runtime
-  const updateToolRuntime = (updates) => {
-    updateSettings({
-      toolRuntime: { ...settings.toolRuntime, ...updates }
-    })
+  // Load gift codes on component mount
+  useEffect(() => {
+    loadGiftCodes()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const saveSettings = async () => {
+    // Validate form trước khi save
+    const validationErrors = validateNotificationForm()
+    if (validationErrors.length > 0) {
+      messageApi.error({
+        content: (
+          <div>
+            <div>Vui lòng sửa các lỗi sau:</div>
+            {validationErrors.map((error, index) => (
+              <div key={index}>• {error}</div>
+            ))}
+          </div>
+        ),
+        duration: 5
+      })
+      return
+    }
+
+    try {
+      // Save notification settings
+      if (settings.notification.enabled) {
+        // Save notification to database
+        await settingsAPI.updateNotification({
+          title: settings.notification.title,
+          content: settings.notification.content,
+          type: 'info',
+          targetAudience: 'all',
+          displayCount: settings.notification.displayCount,
+          hasLink: settings.notification.hasLink,
+          linkUrl: settings.notification.linkUrl || null,
+          linkText: settings.notification.linkText || null,
+          position: settings.notification.position,
+          isActive: true
+        })
+      } else {
+        // Disable all notifications in database  
+        await settingsAPI.disableNotifications()
+      }
+
+      // Save gift key settings
+      await giftAPI.updateGiftSettings({
+        defaultExpiration: settings.giftKey.defaultExpiration,
+        allowMultipleUse: settings.giftKey.allowMultipleUse,
+        maxUses: settings.giftKey.maxUses
+      })
+      
+      messageApi.success('Cài đặt đã được lưu thành công!')
+    } catch (error) {
+      console.error('Error saving settings:', error)
+      messageApi.error('Có lỗi xảy ra khi lưu cài đặt!')
+    }
   }
 
-  // Update key export
-  const updateKeyExport = (updates) => {
-    updateSettings({
-      keyExport: { ...settings.keyExport, ...updates }
-    })
-  }
-
-  return (
-    <div className="w-full max-w-6xl mx-auto p-4 sm:p-6">
-      {/* Header */}
-      <Card className="mb-6">
-        <div className="flex items-center gap-3 mb-2">
-          <SettingOutlined className="text-2xl text-blue-500" />
-          <Title level={2} className="!mb-0">Cài đặt hệ thống</Title>
-        </div>
-        <Text type="secondary">Tùy chỉnh các thông số hoạt động của tool</Text>
-      </Card>
-
-      <Tabs defaultActiveKey="1" type="card" size="large">
-        {/* Tab Thông báo */}
-        <TabPane 
-          tab={
-            <span>
-              <NotificationOutlined />
-              Thông báo
-            </span>
-          } 
-          key="1"
-        >
-          <Card title="Cài đặt thông báo" className="mb-4">
-            <Form layout="vertical" form={form}>
-              <Space direction="vertical" size="large" className="w-full">
-                <Form.Item label="Trạng thái thông báo">
-                  <Switch
+  const tabItems = [
+    {
+      key: 'notification',
+      label: (
+        <span>
+          <NotificationOutlined />
+          Thông Báo
+        </span>
+      ),
+      children: (
+        <Card>
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Form form={form} layout="vertical">
+              <Form.Item>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text strong>Bật/Tắt thông báo</Text>
+                  <Switch 
                     checked={settings.notification.enabled}
                     onChange={(checked) => updateNotification({ enabled: checked })}
-                    checkedChildren="Bật"
-                    unCheckedChildren="Tắt"
                   />
-                  <Text type="secondary" className="ml-3">
-                    {settings.notification.enabled ? 'Thông báo đang được bật' : 'Thông báo đang bị tắt'}
-                  </Text>
-                </Form.Item>
+                </div>
+              </Form.Item>
 
-                <Form.Item label="Tên thông báo">
-                  <Input
-                    value={settings.notification.title}
-                    onChange={(e) => updateNotification({ title: e.target.value.toUpperCase() })}
-                    placeholder="TÊN THÔNG BÁO"
-                    size="large"
-                  />
-                </Form.Item>
-
-                <Form.Item label="Nội dung thông báo">
-                  <TextArea
-                    value={settings.notification.content}
-                    onChange={(e) => updateNotification({ content: e.target.value })}
-                    placeholder="Nhập nội dung thông báo..."
-                    rows={4}
-                    size="large"
-                  />
-                </Form.Item>
-
-                <Form.Item label="Vị trí xuất hiện">
-                  <Select
-                    value={settings.notification.position}
-                    onChange={(value) => updateNotification({ position: value })}
-                    size="large"
-                    className="w-full"
+              {settings.notification.enabled && (
+                <>
+                  <Form.Item 
+                    label="Tiêu đề thông báo"
+                    validateStatus={!settings.notification.title.trim() ? 'error' : ''}
+                    help={!settings.notification.title.trim() ? 'Tiêu đề không được để trống' : ''}
                   >
-                    <Option value="before">Trước khi nhập key</Option>
-                    <Option value="after">Sau khi nhập key</Option>
-                  </Select>
-                </Form.Item>
+                    <Input
+                      value={settings.notification.title}
+                      onChange={(e) => updateNotification({ title: e.target.value })}
+                      placeholder="Nhập tiêu đề thông báo"
+                      size="large"
+                      maxLength={100}
+                      showCount
+                    />
+                  </Form.Item>
 
-                <Form.Item label="Số lần xuất hiện">
-                  <InputNumber
-                    min={1}
-                    max={10}
-                    value={settings.notification.displayCount}
-                    onChange={(value) => updateNotification({ displayCount: value })}
-                    size="large"
-                    className="w-full"
-                  />
-                </Form.Item>
+                  <Form.Item 
+                    label="Nội dung thông báo"
+                    validateStatus={!settings.notification.content.trim() ? 'error' : ''}
+                    help={!settings.notification.content.trim() ? 'Nội dung không được để trống' : ''}
+                  >
+                    <TextArea
+                      value={settings.notification.content}
+                      onChange={(e) => updateNotification({ content: e.target.value })}
+                      placeholder="Nhập nội dung thông báo"
+                      rows={4}
+                      maxLength={500}
+                      showCount
+                    />
+                  </Form.Item>
 
-                <Divider />
-
-                <Form.Item label="Kèm theo link">
-                  <Switch
-                    checked={settings.notification.hasLink}
-                    onChange={(checked) => updateNotification({ hasLink: checked })}
-                    checkedChildren="Có"
-                    unCheckedChildren="Không"
-                  />
-                  <Text type="secondary" className="ml-3">
-                    {settings.notification.hasLink ? 'Thông báo sẽ có link đính kèm' : 'Thông báo không có link'}
-                  </Text>
-                </Form.Item>
-
-                {settings.notification.hasLink && (
-                  <>
-                    <Form.Item label="URL Link">
-                      <Input
-                        value={settings.notification.linkUrl}
-                        onChange={(e) => updateNotification({ linkUrl: e.target.value })}
-                        placeholder="https://example.com"
-                        size="large"
-                      />
-                    </Form.Item>
-
-                    <Form.Item label="Tên hiển thị link">
-                      <Input
-                        value={settings.notification.linkText}
-                        onChange={(e) => updateNotification({ linkText: e.target.value })}
-                        placeholder="Xem thêm"
-                        size="large"
-                      />
-                    </Form.Item>
-                  </>
-                )}
-              </Space>
-            </Form>
-          </Card>
-
-          {/* Preview thông báo */}
-          {settings.notification.enabled && (
-            <Card 
-              title={
-                <span>
-                  <EyeOutlined className="mr-2" />
-                  Xem trước thông báo
-                </span>
-              }
-              className="bg-gradient-to-r from-blue-50 to-purple-50"
-            >
-              <div className="bg-white p-6 rounded-lg border-l-4 border-blue-500 shadow-sm">
-                <Title level={4} className="!text-blue-600 !mb-3">
-                  {settings.notification.title}
-                </Title>
-                <Text className="text-gray-700 text-base leading-relaxed">
-                  {settings.notification.content}
-                </Text>
-                {settings.notification.hasLink && settings.notification.linkUrl && (
-                  <div className="mt-4">
-                    <Button 
-                      type="link" 
-                      href={settings.notification.linkUrl}
-                      target="_blank"
-                      className="!p-0 !text-blue-500 hover:!text-blue-700"
+                  <Form.Item label="Vị trí hiển thị">
+                    <Select
+                      value={settings.notification.position}
+                      onChange={(value) => updateNotification({ position: value })}
+                      size="large"
                     >
-                      {settings.notification.linkText || 'Xem thêm'} →
-                    </Button>
-                  </div>
-                )}
-                <Divider />
-                <Text type="secondary" className="text-sm">
-                  <ClockCircleOutlined className="mr-1" />
-                  Xuất hiện: {settings.notification.position === 'before' ? 'Trước' : 'Sau'} khi nhập key
-                  <span className="mx-2">•</span>
-                  Số lần: {settings.notification.displayCount}
+                      <Option value="before">Trước danh sách key</Option>
+                      <Option value="after">Sau danh sách key</Option>
+                    </Select>
+                  </Form.Item>
+
+                  <Form.Item label="Số lần hiển thị tối đa">
+                    <InputNumber
+                      value={settings.notification.displayCount}
+                      onChange={(value) => updateNotification({ displayCount: value })}
+                      min={1}
+                      max={10}
+                      size="large"
+                      style={{ width: '100%' }}
+                    />
+                  </Form.Item>
+
+                  <Form.Item>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text strong>Có link trong thông báo</Text>
+                      <Switch 
+                        checked={settings.notification.hasLink}
+                        onChange={(checked) => updateNotification({ hasLink: checked })}
+                      />
+                    </div>
+                  </Form.Item>
+
                   {settings.notification.hasLink && (
                     <>
-                      <span className="mx-2">•</span>
-                      Có link đính kèm
+                      <Form.Item 
+                        label="URL Link"
+                        help={settings.notification.linkUrl && !isValidUrl(settings.notification.linkUrl) ? 'URL không hợp lệ' : ''}
+                        validateStatus={settings.notification.linkUrl && !isValidUrl(settings.notification.linkUrl) ? 'error' : ''}
+                      >
+                        <Input
+                          value={settings.notification.linkUrl}
+                          onChange={(e) => updateNotification({ linkUrl: e.target.value })}
+                          placeholder="https://example.com"
+                          size="large"
+                          maxLength={500}
+                        />
+                      </Form.Item>
+
+                      <Form.Item 
+                        label="Text Link"
+                        validateStatus={settings.notification.hasLink && !settings.notification.linkText.trim() ? 'error' : ''}
+                        help={settings.notification.hasLink && !settings.notification.linkText.trim() ? 'Text link không được để trống' : ''}
+                      >
+                        <Input
+                          value={settings.notification.linkText}
+                          onChange={(e) => updateNotification({ linkText: e.target.value })}
+                          placeholder="Nhập text hiển thị cho link"
+                          size="large"
+                          maxLength={50}
+                          showCount
+                        />
+                      </Form.Item>
                     </>
                   )}
-                </Text>
-              </div>
-            </Card>
-          )}
-        </TabPane>
 
-        {/* Tab Thời gian key */}
-        <TabPane 
-          tab={
-            <span>
-              <ClockCircleOutlined />
-              Thời gian key
-            </span>
-          } 
-          key="2"
-        >
-          <Card title="Cài đặt thời gian key gán tài khoản">
+                  <Divider />
+
+                  <div style={{ marginBottom: 16 }}>
+                    <Text strong>Xem trước thông báo:</Text>
+                  </div>
+                  <div style={{ 
+                    padding: 16, 
+                    border: '1px solid #d9d9d9', 
+                    borderRadius: 6, 
+                    backgroundColor: '#f6ffed',
+                    borderColor: '#b7eb8f'
+                  }}>
+                    <div style={{ fontWeight: 'bold', marginBottom: 8, color: '#52c41a' }}>
+                      <NotificationOutlined /> {settings.notification.title || 'Tiêu đề thông báo'}
+                    </div>
+                    <div style={{ marginBottom: 8 }}>
+                      {settings.notification.content || 'Nội dung thông báo sẽ hiển thị ở đây...'}
+                    </div>
+                    {settings.notification.hasLink && settings.notification.linkText && (
+                      <div>
+                        <Button 
+                          type="link" 
+                          icon={<LinkOutlined />}
+                          style={{ padding: 0 }}
+                        >
+                          {settings.notification.linkText}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </Form>
+          </Space>
+        </Card>
+      )
+    },
+    {
+      key: 'gift',
+      label: (
+        <span>
+          <GiftOutlined />
+          Gift Key
+        </span>
+      ),
+      children: (
+        <Card>
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Title level={4}>Cài Đặt Gift Key</Title>
+            
             <Form layout="vertical">
-              <Form.Item 
-                label="Thời gian còn lại để gán key mới (giờ)"
-                help="Khi tài khoản còn ít thời gian hơn số giờ này, key mới sẽ được gán tự động"
-              >
-                <Space>
-                  <InputNumber
-                    min={1}
-                    max={24}
-                    value={settings.keyAssignTime}
-                    onChange={updateKeyAssignTime}
-                    size="large"
-                    addonAfter="giờ"
+              <Form.Item label="Thời gian cộng thêm mặc định (ngày)">
+                <InputNumber
+                  value={settings.giftKey.defaultExpiration}
+                  onChange={(value) => updateSettings({
+                    giftKey: { ...settings.giftKey, defaultExpiration: value }
+                  })}
+                  min={1}
+                  max={365}
+                  size="large"
+                  style={{ width: '100%' }}
+                  addonAfter="ngày"
+                  placeholder="Số ngày sẽ cộng thêm vào key"
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  Khi user nhập gift code, key sẽ được gia hạn thêm số ngày này
+                </Text>
+              </Form.Item>
+
+              <Form.Item>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text strong>Cho phép sử dụng nhiều lần</Text>
+                  <Switch 
+                    checked={settings.giftKey.allowMultipleUse}
+                    onChange={(checked) => updateSettings({
+                      giftKey: { ...settings.giftKey, allowMultipleUse: checked }
+                    })}
                   />
-                  <Text type="secondary">
-                    Mặc định: 5 giờ
-                  </Text>
-                </Space>
+                </div>
+              </Form.Item>
+
+              <Form.Item label="Số lần sử dụng tối đa">
+                <InputNumber
+                  value={settings.giftKey.maxUses}
+                  onChange={(value) => updateSettings({
+                    giftKey: { ...settings.giftKey, maxUses: value }
+                  })}
+                  min={1}
+                  max={100}
+                  size="large"
+                  style={{ width: '100%' }}
+                  disabled={!settings.giftKey.allowMultipleUse}
+                />
               </Form.Item>
             </Form>
-          </Card>
-        </TabPane>
 
-        {/* Tab Gift Code */}
-        <TabPane 
-          tab={
-            <span>
-              <GiftOutlined />
-              Gift Code
-            </span>
-          } 
-          key="3"
-        >
-          <Card title="Cài đặt Gift Code">
-            <Form layout="vertical">
-              <Space direction="vertical" size="large" className="w-full">
-                <Form.Item label="Tên code">
-                  <Input
-                    value={settings.giftCode.code}
-                    onChange={(e) => updateGiftCode({ code: e.target.value })}
-                    placeholder="Nhập tên gift code..."
-                    size="large"
-                  />
-                </Form.Item>
+            <Divider />
 
-                <Form.Item label="Thời gian tặng thêm (giờ)">
-                  <InputNumber
-                    min={0}
-                    value={settings.giftCode.bonusTime}
-                    onChange={(value) => updateGiftCode({ bonusTime: value })}
-                    placeholder="0"
-                    size="large"
-                    addonAfter="giờ"
-                    className="w-full"
-                  />
-                </Form.Item>
-              </Space>
-            </Form>
-          </Card>
-        </TabPane>
+            {/* Gift Codes Management */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Title level={4}>Quản Lý Gift Codes</Title>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={() => setCreateGiftModal(true)}
+              >
+                Tạo Gift Code
+              </Button>
+            </div>
 
-        {/* Tab Tool Runtime */}
-        <TabPane 
-          tab={
-            <span>
-              <ToolOutlined />
-              Thời gian chạy tool
-            </span>
-          } 
-          key="4"
-        >
-          <Card title="Cài đặt thời gian chạy tool">
-            <Form layout="vertical">
-              <Space direction="vertical" size="large" className="w-full">
-                <Form.Item 
-                  label="Chu kỳ chạy tool (giờ)"
-                  help={`Tool sẽ chạy mỗi ${settings.toolRuntime.interval} tiếng`}
-                >
-                  <InputNumber
-                    min={1}
-                    value={settings.toolRuntime.interval}
-                    onChange={(value) => updateToolRuntime({ interval: value })}
-                    size="large"
-                    addonAfter="giờ"
-                    className="w-full"
-                  />
-                </Form.Item>
-
-                <Form.Item 
-                  label="Số lượng tài khoản tạo ra mỗi lần"
-                  help={`Tối thiểu ${settings.toolRuntime.accountTarget} tài khoản sẽ được tạo mỗi ${settings.toolRuntime.interval} tiếng`}
-                >
-                  <InputNumber
-                    min={1}
-                    value={settings.toolRuntime.accountTarget}
-                    onChange={(value) => updateToolRuntime({ accountTarget: value })}
-                    size="large"
-                    addonAfter="tài khoản"
-                    className="w-full"
-                  />
-                </Form.Item>
-              </Space>
-            </Form>
-          </Card>
-        </TabPane>
-
-        {/* Tab Link nhập key */}
-        <TabPane 
-          tab={
-            <span>
-              <LinkOutlined />
-              Link nhập key
-            </span>
-          } 
-          key="5"
-        >
-          <Card title="Cài đặt link nhập key">
-            <Form layout="vertical">
-              <Space direction="vertical" size="large" className="w-full">
-                <Form.Item 
-                  label="Template link khi xuất file TXT"
-                  help="Định dạng sẽ xuất hiện sau mã key khi xuất file TXT. Ví dụ: FBX-ABC123 | [nội dung này]"
-                >
-                  <Input
-                    value={settings.keyExport?.linkTemplate || 'link nhập key:'}
-                    onChange={(e) => updateKeyExport({ linkTemplate: e.target.value })}
-                    placeholder="link nhập key:"
-                    size="large"
-                  />
-                </Form.Item>
-
-                <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                  <div className="flex items-start gap-3">
-                    <EyeOutlined className="text-blue-500 mt-1" />
-                    <div>
-                      <h4 className="text-blue-700 font-semibold mb-2">Xem trước định dạng xuất file:</h4>
-                      <div className="bg-white p-3 rounded border font-mono text-sm">
-                        FBX-ABC123456 | {settings.keyExport?.linkTemplate || 'link nhập key:'}
-                        <br />
-                        THX-DEF789012 | {settings.keyExport?.linkTemplate || 'link nhập key:'}
-                      </div>
+            <Table
+              dataSource={giftCodes}
+              loading={loadingGifts}
+              rowKey="id"
+              size="small"
+              columns={[
+                {
+                  title: 'Gift Code',
+                  dataIndex: 'code',
+                  key: 'code',
+                  render: (code) => (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Text code style={{ margin: 0 }}>{code}</Text>
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<CopyOutlined />}
+                        onClick={() => copyToClipboard(code)}
+                        title="Copy code"
+                      />
                     </div>
+                  ),
+                },
+                {
+                  title: 'Thời gian cộng thêm',
+                  dataIndex: 'bonus_days',
+                  key: 'bonus_days',
+                  width: 140,
+                  render: (days) => (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <ClockCircleOutlined style={{ color: '#1890ff' }} />
+                      <Text strong style={{ color: '#1890ff' }}>+{days} ngày</Text>
+                    </div>
+                  ),
+                },
+                {
+                  title: 'Lượt sử dụng',
+                  key: 'usage',
+                  width: 120,
+                  render: (_, record) => (
+                    <Text>{record.current_uses}/{record.max_uses}</Text>
+                  ),
+                },
+                {
+                  title: 'Trạng thái',
+                  dataIndex: 'is_active',
+                  key: 'status',
+                  width: 100,
+                  render: (isActive, record) => {
+                    if (!isActive) return <Text type="secondary">Tắt</Text>
+                    if (record.expires_at && new Date() > new Date(record.expires_at)) {
+                      return <Text type="danger">Hết hạn</Text>
+                    }
+                    if (record.current_uses >= record.max_uses) {
+                      return <Text type="warning">Hết lượt</Text>
+                    }
+                    return <Text type="success">Hoạt động</Text>
+                  },
+                },
+                {
+                  title: 'Hành động',
+                  key: 'actions',
+                  width: 80,
+                  render: () => (
+                    <Popconfirm
+                      title="Xóa gift code này?"
+                      onConfirm={() => {
+                        // Handle delete - will implement later
+                        messageApi.info('Tính năng xóa sẽ được cập nhật sau')
+                      }}
+                      okText="Xóa"
+                      cancelText="Hủy"
+                    >
+                      <Button
+                        type="text"
+                        danger
+                        size="small"
+                        icon={<DeleteOutlined />}
+                        title="Xóa"
+                      />
+                    </Popconfirm>
+                  ),
+                },
+              ]}
+              pagination={{
+                pageSize: 5,
+                showSizeChanger: false,
+              }}
+            />
+
+            {/* Create Gift Code Modal */}
+            <Modal
+              title="Tạo Gift Code Mới"
+              open={createGiftModal}
+              onCancel={() => setCreateGiftModal(false)}
+              onOk={() => {
+                const bonusDays = settings.giftKey.defaultExpiration
+                const maxUses = settings.giftKey.allowMultipleUse ? settings.giftKey.maxUses : 1
+                
+                console.log('Modal sending data:', { bonusDays, maxUses }) // Debug log
+                
+                createGiftCode({
+                  bonusDays,
+                  maxUses
+                })
+              }}
+              okText="Tạo Gift Code"
+              cancelText="Hủy"
+            >
+              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                <div>
+                  <Text strong>Gift Code sẽ được tạo với cài đặt hiện tại:</Text>
+                </div>
+                
+                <div style={{ padding: 16, backgroundColor: '#f5f5f5', borderRadius: 6 }}>
+                  <div style={{ marginBottom: 8 }}>
+                    <Text>• <strong>Mã code:</strong> Tự động tạo (8 ký tự)</Text>
+                  </div>
+                  <div style={{ marginBottom: 8 }}>
+                    <Text>• <strong>Thời gian cộng thêm:</strong> +{settings.giftKey.defaultExpiration} ngày vào key</Text>
+                  </div>
+                  <div>
+                    <Text>• <strong>Số lần sử dụng:</strong> {settings.giftKey.allowMultipleUse ? settings.giftKey.maxUses : 1} lần</Text>
                   </div>
                 </div>
+                
+                <div>
+                  <Text type="secondary">
+                    Mã gift code sẽ được tự động copy vào clipboard sau khi tạo thành công.
+                  </Text>
+                </div>
               </Space>
-            </Form>
-          </Card>
-        </TabPane>
-      </Tabs>
+            </Modal>
+          </Space>
+        </Card>
+      )
+    },
+    {
+      key: 'auto-renewal',
+      label: (
+        <span>
+          <ClockCircleOutlined />
+          Gia Hạn Tự Động
+        </span>
+      ),
+      children: (
+        <Card>
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Title level={4}>Cài Đặt Gia Hạn Tự Động</Title>
+            
+            <Form layout="vertical">
+              <Form.Item>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text strong>Bật gia hạn tự động</Text>
+                  <Switch 
+                    checked={settings.autoRenewal.enabled}
+                    onChange={(checked) => updateSettings({
+                      autoRenewal: { ...settings.autoRenewal, enabled: checked }
+                    })}
+                  />
+                </div>
+              </Form.Item>
 
-      {/* Action Buttons */}
-      <Card className="mt-6">
+              {settings.autoRenewal.enabled && (
+                <>
+                  <Form.Item label="Gia hạn trước khi hết hạn (ngày)">
+                    <InputNumber
+                      value={settings.autoRenewal.renewBeforeExpiry}
+                      onChange={(value) => updateSettings({
+                        autoRenewal: { ...settings.autoRenewal, renewBeforeExpiry: value }
+                      })}
+                      min={1}
+                      max={30}
+                      size="large"
+                      style={{ width: '100%' }}
+                    />
+                  </Form.Item>
+
+                  <Form.Item label="Thời gian gia hạn mặc định (ngày)">
+                    <InputNumber
+                      value={settings.autoRenewal.defaultDuration}
+                      onChange={(value) => updateSettings({
+                        autoRenewal: { ...settings.autoRenewal, defaultDuration: value }
+                      })}
+                      min={1}
+                      max={365}
+                      size="large"
+                      style={{ width: '100%' }}
+                    />
+                  </Form.Item>
+                </>
+              )}
+            </Form>
+          </Space>
+        </Card>
+      )
+    },
+    {
+      key: 'system',
+      label: (
+        <span>
+          <ToolOutlined />
+          Hệ Thống
+        </span>
+      ),
+      children: (
+        <Card>
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Title level={4}>Cài Đặt Hệ Thống</Title>
+            
+            <Form layout="vertical">
+              <Form.Item>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text strong>Chế độ tối</Text>
+                  <Switch 
+                    checked={settings.system.darkMode}
+                    onChange={(checked) => updateSettings({
+                      system: { ...settings.system, darkMode: checked }
+                    })}
+                  />
+                </div>
+              </Form.Item>
+
+              <Form.Item>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text strong>Hiển thị thông báo hệ thống</Text>
+                  <Switch 
+                    checked={settings.system.showNotifications}
+                    onChange={(checked) => updateSettings({
+                      system: { ...settings.system, showNotifications: checked }
+                    })}
+                  />
+                </div>
+              </Form.Item>
+
+              <Form.Item label="Ngôn ngữ">
+                <Select
+                  value={settings.system.language}
+                  onChange={(value) => updateSettings({
+                    system: { ...settings.system, language: value }
+                  })}
+                  size="large"
+                >
+                  <Option value="vi">Tiếng Việt</Option>
+                  <Option value="en">English</Option>
+                </Select>
+              </Form.Item>
+
+              <Form.Item label="Số mục hiển thị mỗi trang">
+                <InputNumber
+                  value={settings.system.itemsPerPage}
+                  onChange={(value) => updateSettings({
+                    system: { ...settings.system, itemsPerPage: value }
+                  })}
+                  min={10}
+                  max={100}
+                  size="large"
+                  style={{ width: '100%' }}
+                />
+              </Form.Item>
+            </Form>
+          </Space>
+        </Card>
+      )
+    }
+  ]
+
+  return (
+    <div style={{ padding: 24 }}>
+      <div style={{ marginBottom: 24 }}>
+        <Title level={2}>
+          <SettingOutlined /> Cài Đặt Hệ Thống
+        </Title>
+      </div>
+
+      <Tabs 
+        items={tabItems}
+        size="large"
+        type="card"
+      />
+
+      <div style={{ marginTop: 24, textAlign: 'center' }}>
         <Space size="middle">
           <Button 
             type="primary" 
@@ -409,18 +762,18 @@ function Settings() {
             size="large"
             onClick={saveSettings}
           >
-            Lưu cài đặt
+            Lưu Cài Đặt
           </Button>
+          
           <Button 
             icon={<ReloadOutlined />} 
             size="large"
-            onClick={handleResetSettings}
-            danger
+            onClick={resetSettings}
           >
-            Reset mặc định
+            Khôi Phục Mặc Định
           </Button>
         </Space>
-      </Card>
+      </div>
     </div>
   )
 }

@@ -13,6 +13,22 @@ const getDefaultSettings = () => ({
     linkUrl: '',
     linkText: 'Xem thêm'
   },
+  giftKey: {
+    defaultExpiration: 30,
+    allowMultipleUse: false,
+    maxUses: 1
+  },
+  autoRenewal: {
+    enabled: false,
+    renewBeforeExpiry: 7,
+    defaultDuration: 30
+  },
+  system: {
+    darkMode: false,
+    showNotifications: true,
+    language: 'vi',
+    itemsPerPage: 20
+  },
   keyAssignTime: 5,
   giftCode: {
     code: '',
