@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Table, Button, Input, Space, Modal, DatePicker, Upload, Typography, Popconfirm, App, Select, InputNumber, Checkbox, Spin, Alert, Tag } from 'antd'
 import { EyeOutlined, EditOutlined, DeleteOutlined, UploadOutlined, PlusOutlined, FilterOutlined, CalendarOutlined, ClockCircleOutlined, ReloadOutlined, KeyOutlined, SearchOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
@@ -261,10 +261,62 @@ const Account = () => {
     }
   }
 
-  // Tự động xóa tài khoản hết hạn
-  // const autoRemoveExpired = () => {
-  //   setAccounts(accs => accs.filter(acc => dayjs(acc.expire).diff(dayjs(), 'second') > 0))
-  // }
+  // Tự động xóa tài khoản hết hạn khi load
+  const autoDeleteExpired = useCallback(async () => {
+    try {
+      const expiredAccounts = accounts.filter(account => 
+        dayjs().isAfter(dayjs(account.expires_at))
+      )
+
+      if (expiredAccounts.length === 0) {
+        return // Không có tài khoản hết hạn
+      }
+
+      console.log(`🗑️ Found ${expiredAccounts.length} expired accounts, auto-deleting...`)
+      
+      let successCount = 0
+      let errorCount = 0
+
+      // Delete expired accounts silently
+      for (const account of expiredAccounts) {
+        try {
+          console.log(`🗑️ Auto-deleting expired account: ${account.username}`)
+          await deleteAccount(account.id)
+          successCount++
+        } catch (error) {
+          errorCount++
+          console.error(`❌ Failed to auto-delete expired account ${account.username}:`, error.message)
+        }
+      }
+
+      // Show notification only if some accounts were deleted
+      if (successCount > 0) {
+        messageApi.info({
+          content: `🧹 Đã tự động xóa ${successCount} tài khoản hết hạn để giảm tải bộ nhớ`,
+          duration: 3
+        })
+      }
+
+      if (errorCount > 0) {
+        console.warn(`⚠️ Failed to delete ${errorCount} expired accounts`)
+      }
+      
+    } catch (error) {
+      console.error('Auto delete expired accounts error:', error)
+    }
+  }, [accounts, deleteAccount, messageApi])
+
+  // Tự động xóa tài khoản hết hạn khi accounts thay đổi
+  useEffect(() => {
+    if (accounts.length > 0) {
+      // Delay một chút để UI load xong
+      const timer = setTimeout(() => {
+        autoDeleteExpired()
+      }, 1000)
+      
+      return () => clearTimeout(timer)
+    }
+  }, [accounts.length, autoDeleteExpired]) // Chỉ chạy khi số lượng accounts thay đổi
 
   // Tick chọn
   const handleSelect = id => setAccounts(accs => accs.map(a => a.id === id ? { ...a, selected: !a.selected } : a))

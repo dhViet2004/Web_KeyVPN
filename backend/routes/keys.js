@@ -173,7 +173,7 @@ router.get('/:group', [
           WHEN vk.expires_at > NOW() THEN DATEDIFF(vk.expires_at, NOW())
           ELSE 0
         END as days_remaining,
-        (SELECT COUNT(*) FROM account_keys ak WHERE ak.key_id = vk.id) as linked_accounts
+        (SELECT COUNT(*) FROM account_keys ak WHERE ak.key_id = vk.id AND ak.is_active = 1) as linked_accounts
       FROM vpn_keys vk
       INNER JOIN key_groups kg ON vk.group_id = kg.id
       ${whereClause}
@@ -228,11 +228,31 @@ router.get('/:group', [
     const total = countResult.data[0].total;
     const totalPages = Math.ceil(total / limit);
 
-    // Đảm bảo mỗi key đều có trường group (lấy từ group_code)
-    const keysWithGroup = keysResult.data.map(k => ({
-      ...k,
-      group: k.group_code
-    }));
+    // Đảm bảo mỗi key đều có trường group (lấy từ group_code) và auto-correct status
+    const keysWithGroup = keysResult.data.map(k => {
+      let correctedStatus = k.status;
+      
+      // Auto-correct status based on linked_accounts
+      if (k.linked_accounts > 0 && k.status === 'chờ') {
+        correctedStatus = 'đang hoạt động';
+        // Update in database asynchronously (don't wait for it)
+        executeQuery('UPDATE vpn_keys SET status = ? WHERE id = ?', ['đang hoạt động', k.id])
+          .then(() => console.log(`✅ Auto-corrected key ${k.code} status to 'đang hoạt động'`))
+          .catch(err => console.warn(`⚠️ Failed to auto-correct key ${k.code} status:`, err));
+      } else if (k.linked_accounts === 0 && k.status === 'đang hoạt động') {
+        correctedStatus = 'chờ';
+        // Update in database asynchronously (don't wait for it)
+        executeQuery('UPDATE vpn_keys SET status = ? WHERE id = ?', ['chờ', k.id])
+          .then(() => console.log(`✅ Auto-corrected key ${k.code} status to 'chờ'`))
+          .catch(err => console.warn(`⚠️ Failed to auto-correct key ${k.code} status:`, err));
+      }
+      
+      return {
+        ...k,
+        status: correctedStatus,
+        group: k.group_code
+      };
+    });
     res.json({
       success: true,
       data: {

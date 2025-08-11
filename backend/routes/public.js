@@ -75,7 +75,7 @@ router.post('/check-key', [
       });
     }
 
-    // Get associated VPN accounts through account_keys relationship (always check)
+    // Get associated VPN accounts through account_keys relationship (only active and non-expired accounts)
     const accountsQuery = `
       SELECT 
         va.id,
@@ -85,7 +85,10 @@ router.post('/check-key', [
         TIMESTAMPDIFF(SECOND, NOW(), va.expires_at) as seconds_remaining
       FROM vpn_accounts va
       INNER JOIN account_keys ak ON va.id = ak.account_id
-      WHERE ak.key_id = ? AND va.is_active = 1
+      WHERE ak.key_id = ? 
+        AND va.is_active = 1 
+        AND va.expires_at > NOW()
+        AND ak.is_active = 1
       ORDER BY va.created_at DESC
     `;
 
@@ -98,6 +101,12 @@ router.post('/check-key', [
         keyData.status = 'đang hoạt động';
         // Update key status in database
         await executeQuery('UPDATE vpn_keys SET status = ? WHERE id = ?', ['đang hoạt động', keyData.id]);
+      }
+      // Nếu không có accounts nào active nhưng key status vẫn là 'đang hoạt động', cập nhật về 'chờ'
+      else if (accounts.length === 0 && keyData.status === 'đang hoạt động') {
+        keyData.status = 'chờ';
+        // Update key status in database
+        await executeQuery('UPDATE vpn_keys SET status = ? WHERE id = ?', ['chờ', keyData.id]);
       }
     }
 
@@ -281,48 +290,60 @@ router.post('/auto-assign-key', [
     let availableAccountsQuery = '';
     
     if (keyData.key_type === '1key') {
-      // 1key chỉ gán vào tài khoản hoàn toàn trống (không có key nào)
+      // 1key chỉ gán vào tài khoản hoàn toàn trống (không có key nào) và còn hạn
       availableAccountsQuery = `
-        SELECT va.id, va.username, va.password, va.expires_at
+        SELECT va.id, va.username, va.password, va.expires_at,
+               0 as assigned_keys,
+               '' as existing_key_types,
+               1 as priority
         FROM vpn_accounts va
-        LEFT JOIN account_keys ak ON va.id = ak.account_id
+        LEFT JOIN account_keys ak ON va.id = ak.account_id AND ak.is_active = 1
         WHERE va.is_active = 1 
           AND va.expires_at > NOW()
           AND ak.id IS NULL
+        ORDER BY va.created_at DESC
         LIMIT 1
       `;
     } else if (keyData.key_type === '2key') {
-      // 2key chỉ gán vào:
-      // - Tài khoản trống (0 key)
-      // - Tài khoản đã có 1 key loại 2key (cùng loại)
+      // 2key ưu tiên gán vào tài khoản đã có 1 key loại 2key trước, sau đó mới gán vào tài khoản trống
       availableAccountsQuery = `
         SELECT va.id, va.username, va.password, va.expires_at,
                COUNT(ak.id) as assigned_keys,
-               GROUP_CONCAT(DISTINCT vk.key_type) as existing_key_types
+               GROUP_CONCAT(DISTINCT vk.key_type) as existing_key_types,
+               CASE 
+                 WHEN COUNT(ak.id) = 1 AND GROUP_CONCAT(DISTINCT vk.key_type) = '2key' THEN 1
+                 WHEN COUNT(ak.id) = 0 THEN 2
+                 ELSE 3
+               END as priority
         FROM vpn_accounts va
-        LEFT JOIN account_keys ak ON va.id = ak.account_id
+        LEFT JOIN account_keys ak ON va.id = ak.account_id AND ak.is_active = 1
         LEFT JOIN vpn_keys vk ON ak.key_id = vk.id
         WHERE va.is_active = 1 AND va.expires_at > NOW()
         GROUP BY va.id, va.username, va.password, va.expires_at
         HAVING (assigned_keys = 0) 
            OR (assigned_keys = 1 AND existing_key_types = '2key')
+        ORDER BY priority ASC, va.created_at DESC
         LIMIT 1
       `;
     } else if (keyData.key_type === '3key') {
-      // 3key chỉ gán vào:
-      // - Tài khoản trống (0 key)
-      // - Tài khoản đã có 1-2 key loại 3key (cùng loại)
+      // 3key ưu tiên gán vào tài khoản đã có 1-2 key loại 3key trước, sau đó mới gán vào tài khoản trống
       availableAccountsQuery = `
         SELECT va.id, va.username, va.password, va.expires_at,
                COUNT(ak.id) as assigned_keys,
-               GROUP_CONCAT(DISTINCT vk.key_type) as existing_key_types
+               GROUP_CONCAT(DISTINCT vk.key_type) as existing_key_types,
+               CASE 
+                 WHEN COUNT(ak.id) BETWEEN 1 AND 2 AND GROUP_CONCAT(DISTINCT vk.key_type) = '3key' THEN 1
+                 WHEN COUNT(ak.id) = 0 THEN 2
+                 ELSE 3
+               END as priority
         FROM vpn_accounts va
-        LEFT JOIN account_keys ak ON va.id = ak.account_id
+        LEFT JOIN account_keys ak ON va.id = ak.account_id AND ak.is_active = 1
         LEFT JOIN vpn_keys vk ON ak.key_id = vk.id
         WHERE va.is_active = 1 AND va.expires_at > NOW()
         GROUP BY va.id, va.username, va.password, va.expires_at
         HAVING (assigned_keys = 0) 
            OR (assigned_keys < 3 AND existing_key_types = '3key')
+        ORDER BY priority ASC, va.created_at DESC
         LIMIT 1
       `;
     }
@@ -337,6 +358,13 @@ router.post('/auto-assign-key', [
     }
 
     const targetAccount = accountResult.data[0];
+    
+    console.log(`🎯 Selected target account for ${keyData.key_type} key:`, {
+      username: targetAccount.username,
+      assigned_keys: targetAccount.assigned_keys || 0,
+      existing_types: targetAccount.existing_key_types || 'none',
+      priority: targetAccount.priority || 'N/A'
+    });
 
     // Assign key to account - simplified query without is_active and assigned_at
     const assignQuery = `

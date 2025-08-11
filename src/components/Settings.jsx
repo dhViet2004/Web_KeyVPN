@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Button, Input, InputNumber, Switch, Select, Typography, Card, Tabs, Form, Space, Divider, App, Table, Modal, Popconfirm } from 'antd'
+import { Button, Input, InputNumber, Switch, Select, Typography, Card, Tabs, Form, Space, Divider, App, Table, Modal, Popconfirm, Badge, Spin } from 'antd'
 import { 
   SettingOutlined, 
   NotificationOutlined, 
@@ -12,10 +12,13 @@ import {
   LinkOutlined,
   PlusOutlined,
   DeleteOutlined,
-  CopyOutlined
+  CopyOutlined,
+  PlayCircleOutlined,
+  StopOutlined,
+  SyncOutlined
 } from '@ant-design/icons'
 import { useSettings } from '../hooks/useSettings'
-import { settingsAPI, giftAPI } from '../services/api'
+import { settingsAPI, giftAPI, autoAssignmentAPI } from '../services/api'
 
 const { Title, Text } = Typography
 const { TextArea } = Input
@@ -28,6 +31,18 @@ function Settings() {
   const [giftCodes, setGiftCodes] = useState([])
   const [loadingGifts, setLoadingGifts] = useState(false)
   const [createGiftModal, setCreateGiftModal] = useState(false)
+  const [serviceStatus, setServiceStatus] = useState({
+    isRunning: false,
+    intervalId: false,
+    settings: null
+  })
+  // Add state for auto assignment inputs to prevent auto-save interference
+  const [autoAssignmentInputs, setAutoAssignmentInputs] = useState({
+    beforeExpiry: 300,
+    checkInterval: 30
+  })
+  const [isEditingAutoAssignment, setIsEditingAutoAssignment] = useState(false)
+  const [loadingServiceStatus, setLoadingServiceStatus] = useState(false)
 
   // Load notification từ database khi component mount
   useEffect(() => {
@@ -67,6 +82,48 @@ function Settings() {
               maxUses: giftResponse.data.maxUses || 1
             }
           })
+        }
+
+        // Load auto assignment settings
+        try {
+          console.log('Loading auto assignment settings...');
+          const autoAssignmentResponse = await autoAssignmentAPI.getSettings()
+          console.log('Auto assignment response:', autoAssignmentResponse);
+          
+          if (autoAssignmentResponse.success && autoAssignmentResponse.data) {
+            console.log('Updating auto assignment settings:', autoAssignmentResponse.data);
+            
+            // Update settings in state
+            updateSettings({
+              autoAssignment: {
+                enabled: autoAssignmentResponse.data.enabled || false,
+                beforeExpiry: autoAssignmentResponse.data.beforeExpiry || 300,
+                checkInterval: autoAssignmentResponse.data.checkInterval || 30
+              }
+            });
+            
+            // Sync input state
+            setAutoAssignmentInputs({
+              beforeExpiry: autoAssignmentResponse.data.beforeExpiry || 300,
+              checkInterval: autoAssignmentResponse.data.checkInterval || 30
+            });
+            
+            console.log('Auto assignment settings loaded successfully');
+          }
+        } catch (error) {
+          console.log('Auto assignment settings not found, using defaults:', error.message)
+          // Set default values if not found
+          updateSettings({
+            autoAssignment: {
+              enabled: false,
+              beforeExpiry: 300,
+              checkInterval: 30
+            }
+          });
+          setAutoAssignmentInputs({
+            beforeExpiry: 300,
+            checkInterval: 30
+          });
         }
 
       } catch (error) {
@@ -184,9 +241,115 @@ function Settings() {
     }
   }
 
+  // Auto assignment service functions
+  const loadServiceStatus = async () => {
+    setLoadingServiceStatus(true)
+    try {
+      const response = await autoAssignmentAPI.getStatus()
+      if (response.success) {
+        setServiceStatus(response.data)
+        // Sync input state with server data only if not editing
+        if (response.data.settings && !isEditingAutoAssignment) {
+          setAutoAssignmentInputs({
+            beforeExpiry: response.data.settings.beforeExpiry || 300,
+            checkInterval: response.data.settings.checkInterval || 30
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error loading service status:', error)
+    }
+    setLoadingServiceStatus(false)
+  }
+
+  const startService = async () => {
+    try {
+      const response = await autoAssignmentAPI.start()
+      if (response.success) {
+        messageApi.success('Đã khởi động dịch vụ gán key tự động')
+        loadServiceStatus()
+      } else {
+        messageApi.error(response.message || 'Lỗi khi khởi động dịch vụ')
+      }
+    } catch (error) {
+      console.error('Error starting service:', error)
+      messageApi.error('Lỗi khi khởi động dịch vụ')
+    }
+  }
+
+  const stopService = async () => {
+    try {
+      const response = await autoAssignmentAPI.stop()
+      if (response.success) {
+        messageApi.success('Đã dừng dịch vụ gán key tự động')
+        loadServiceStatus()
+      } else {
+        messageApi.error(response.message || 'Lỗi khi dừng dịch vụ')
+      }
+    } catch (error) {
+      console.error('Error stopping service:', error)
+      messageApi.error('Lỗi khi dừng dịch vụ')
+    }
+  }
+
+  const runServiceNow = async () => {
+    try {
+      const response = await autoAssignmentAPI.runNow()
+      if (response.success) {
+        messageApi.success('Đã chạy kiểm tra và gán key ngay lập tức')
+      } else {
+        messageApi.error(response.message || 'Lỗi khi chạy dịch vụ')
+      }
+    } catch (error) {
+      console.error('Error running service now:', error)
+      messageApi.error('Lỗi khi chạy dịch vụ')
+    }
+  }
+
+  // Save auto assignment settings to database
+  const saveAutoAssignmentSettings = async (newSettings) => {
+    try {
+      console.log('Saving auto assignment settings:', newSettings);
+      
+      // Ensure all required fields are present and valid
+      const settingsToSave = {
+        enabled: Boolean(newSettings.enabled),
+        beforeExpiry: newSettings.beforeExpiry !== null && newSettings.beforeExpiry !== undefined ? Number(newSettings.beforeExpiry) : 300,
+        checkInterval: newSettings.checkInterval !== null && newSettings.checkInterval !== undefined ? Number(newSettings.checkInterval) : 30
+      };
+
+      // Validate the numbers
+      if (isNaN(settingsToSave.beforeExpiry) || settingsToSave.beforeExpiry < 1 || settingsToSave.beforeExpiry > 1440) {
+        throw new Error('Before expiry must be between 1-1440 minutes');
+      }
+
+      if (isNaN(settingsToSave.checkInterval) || settingsToSave.checkInterval < 1 || settingsToSave.checkInterval > 360) {
+        throw new Error('Check interval must be between 1-360 minutes');
+      }
+
+      console.log('Settings to save:', settingsToSave);
+      
+      const response = await autoAssignmentAPI.updateSettings(settingsToSave);
+      
+      if (response.success) {
+        messageApi.success('Đã lưu cài đặt gán key tự động');
+        // Reload service status to get updated data
+        await loadServiceStatus();
+        return true;
+      } else {
+        throw new Error(response.message || 'Failed to save settings');
+      }
+    } catch (error) {
+      console.error('Save auto assignment settings error:', error);
+      messageApi.error('Lỗi khi lưu cài đặt gán key tự động: ' + error.message);
+      return false;
+    }
+  }
+
   // Load gift codes on component mount
   useEffect(() => {
     loadGiftCodes()
+    loadServiceStatus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -235,8 +398,18 @@ function Settings() {
         allowMultipleUse: settings.giftKey.allowMultipleUse,
         maxUses: settings.giftKey.maxUses
       })
+
+      // Save auto assignment settings - use the validated save function
+      if (settings.autoAssignment) {
+        const autoSaveResult = await saveAutoAssignmentSettings(settings.autoAssignment)
+        if (!autoSaveResult) {
+          // Auto assignment save failed, but other settings may have succeeded
+          messageApi.warning('Cài đặt thông báo và gift key đã lưu, nhưng có lỗi với cài đặt gán key tự động')
+          return
+        }
+      }
       
-      messageApi.success('Cài đặt đã được lưu thành công!')
+      messageApi.success('Tất cả cài đặt đã được lưu thành công!')
     } catch (error) {
       console.error('Error saving settings:', error)
       messageApi.error('Có lỗi xảy ra khi lưu cài đặt!')
@@ -611,58 +784,263 @@ function Settings() {
       )
     },
     {
-      key: 'auto-renewal',
+      key: 'auto-assignment',
       label: (
         <span>
           <ClockCircleOutlined />
-          Gia Hạn Tự Động
+          Gán Key Tự Động
         </span>
       ),
       children: (
         <Card>
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-            <Title level={4}>Cài Đặt Gia Hạn Tự Động</Title>
+            <Title level={4}>Cài Đặt Gán Key Tự Động</Title>
+            
+            <div style={{ padding: 12, backgroundColor: '#f0f9ff', borderRadius: 6, border: '1px solid #bae6fd' }}>
+              <Text type="secondary" style={{ fontSize: 14 }}>
+                💡 Trong khoảng thời gian trước khi tài khoản hết hạn, nếu có tài khoản mới trống thì hệ thống sẽ tự động chuyển key sang tài khoản mới.
+              </Text>
+            </div>
             
             <Form layout="vertical">
               <Form.Item>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Text strong>Bật gia hạn tự động</Text>
+                  <div>
+                    <Text strong>Bật gán key tự động</Text>
+                    <div style={{ marginTop: 4 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        Tự động chuyển key sang tài khoản mới
+                      </Text>
+                    </div>
+                  </div>
                   <Switch 
-                    checked={settings.autoRenewal.enabled}
-                    onChange={(checked) => updateSettings({
-                      autoRenewal: { ...settings.autoRenewal, enabled: checked }
-                    })}
+                    checked={settings.autoAssignment?.enabled || false}
+                    onChange={async (checked) => {
+                      const currentSettings = settings.autoAssignment || {}
+                      const newSettings = {
+                        enabled: checked,
+                        beforeExpiry: autoAssignmentInputs.beforeExpiry !== null && autoAssignmentInputs.beforeExpiry !== undefined 
+                          ? autoAssignmentInputs.beforeExpiry 
+                          : currentSettings.beforeExpiry || 300,
+                        checkInterval: autoAssignmentInputs.checkInterval !== null && autoAssignmentInputs.checkInterval !== undefined
+                          ? autoAssignmentInputs.checkInterval
+                          : currentSettings.checkInterval || 30
+                      }
+                      
+                      // Update UI state first
+                      updateSettings({
+                        autoAssignment: newSettings
+                      })
+                      
+                      // Save to database immediately
+                      const saveResult = await saveAutoAssignmentSettings(newSettings)
+                      if (!saveResult) {
+                        // Revert UI state if save failed
+                        updateSettings({
+                          autoAssignment: {
+                            ...newSettings,
+                            enabled: !checked // revert the toggle
+                          }
+                        })
+                      }
+                    }}
+                    size="default"
                   />
                 </div>
               </Form.Item>
 
-              {settings.autoRenewal.enabled && (
+              {settings.autoAssignment?.enabled && (
                 <>
-                  <Form.Item label="Gia hạn trước khi hết hạn (ngày)">
-                    <InputNumber
-                      value={settings.autoRenewal.renewBeforeExpiry}
-                      onChange={(value) => updateSettings({
-                        autoRenewal: { ...settings.autoRenewal, renewBeforeExpiry: value }
-                      })}
-                      min={1}
-                      max={30}
-                      size="large"
-                      style={{ width: '100%' }}
-                    />
+                  <Form.Item label="Thời gian chuyển đổi key (phút)">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <InputNumber
+                        value={autoAssignmentInputs.beforeExpiry}
+                        onChange={(value) => {
+                          // Mark as editing to prevent auto-load override
+                          setIsEditingAutoAssignment(true);
+                          // Update local state immediately - allow null/undefined for editing
+                          setAutoAssignmentInputs(prev => ({
+                            ...prev,
+                            beforeExpiry: value
+                          }));
+                        }}
+                        onFocus={() => setIsEditingAutoAssignment(true)}
+                        onBlur={async () => {
+                          // Save when user finishes editing
+                          setIsEditingAutoAssignment(false);
+                          
+                          // Use default value if empty
+                          const finalValue = autoAssignmentInputs.beforeExpiry !== null && autoAssignmentInputs.beforeExpiry !== undefined 
+                            ? autoAssignmentInputs.beforeExpiry 
+                            : 300;
+                          
+                          // Update local state with final value
+                          setAutoAssignmentInputs(prev => ({
+                            ...prev,
+                            beforeExpiry: finalValue
+                          }));
+                          
+                          const currentSettings = settings.autoAssignment || {}
+                          const newSettings = {
+                            enabled: currentSettings.enabled || false,
+                            beforeExpiry: finalValue,
+                            checkInterval: currentSettings.checkInterval || 30
+                          }
+                          updateSettings({
+                            autoAssignment: newSettings
+                          })
+                          await saveAutoAssignmentSettings(newSettings)
+                        }}
+                        min={1}
+                        max={1440}
+                        size="large"
+                        style={{ width: 120 }}
+                      />
+                      <Text>phút</Text>
+                    </div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      Trong khoảng thời gian này trước khi hết hạn, nếu có tài khoản mới trống thì hệ thống sẽ chuyển key sang tài khoản mới. Thời gian để admin cập nhật danh sách tài khoản mới.
+                    </Text>
                   </Form.Item>
 
-                  <Form.Item label="Thời gian gia hạn mặc định (ngày)">
-                    <InputNumber
-                      value={settings.autoRenewal.defaultDuration}
-                      onChange={(value) => updateSettings({
-                        autoRenewal: { ...settings.autoRenewal, defaultDuration: value }
-                      })}
-                      min={1}
-                      max={365}
-                      size="large"
-                      style={{ width: '100%' }}
-                    />
+                  <Form.Item label="Thời gian kiểm tra định kỳ">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <InputNumber
+                        value={autoAssignmentInputs.checkInterval}
+                        onChange={(value) => {
+                          // Mark as editing to prevent auto-load override
+                          setIsEditingAutoAssignment(true);
+                          // Update local state immediately - allow null/undefined for editing
+                          setAutoAssignmentInputs(prev => ({
+                            ...prev,
+                            checkInterval: value
+                          }));
+                        }}
+                        onFocus={() => setIsEditingAutoAssignment(true)}
+                        onBlur={async () => {
+                          // Save when user finishes editing
+                          setIsEditingAutoAssignment(false);
+                          
+                          // Use default value if empty
+                          const finalValue = autoAssignmentInputs.checkInterval !== null && autoAssignmentInputs.checkInterval !== undefined 
+                            ? autoAssignmentInputs.checkInterval 
+                            : 30;
+                          
+                          // Update local state with final value
+                          setAutoAssignmentInputs(prev => ({
+                            ...prev,
+                            checkInterval: finalValue
+                          }));
+                          
+                          const currentSettings = settings.autoAssignment || {}
+                          const newSettings = {
+                            enabled: currentSettings.enabled || false,
+                            beforeExpiry: currentSettings.beforeExpiry || 300,
+                            checkInterval: finalValue
+                          }
+                          updateSettings({
+                            autoAssignment: newSettings
+                          })
+                          await saveAutoAssignmentSettings(newSettings)
+                        }}
+                        min={1}
+                        max={360}
+                        size="large"
+                        style={{ width: 120 }}
+                      />
+                      <Text>phút</Text>
+                    </div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      Hệ thống sẽ kiểm tra và gán key tự động mỗi khoảng thời gian này.
+                    </Text>
                   </Form.Item>
+
+                  <div style={{ padding: 12, backgroundColor: '#fef3c7', borderRadius: 6, border: '1px solid #fbbf24' }}>
+                    <Text style={{ fontSize: 13, color: '#92400e' }}>
+                      ⚠️ <strong>Lưu ý:</strong> Chức năng này chỉ hoạt động khi có key còn trống trong hệ thống. 
+                      Đảm bảo luôn có key dự phòng để tránh gián đoạn dịch vụ.
+                    </Text>
+                  </div>
+
+                  <Divider />
+
+                  {/* Service Status Section */}
+                  <div style={{ marginTop: 24 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                      <Title level={5} style={{ margin: 0 }}>Trạng thái dịch vụ</Title>
+                      <Button
+                        icon={<ReloadOutlined />}
+                        onClick={loadServiceStatus}
+                        loading={loadingServiceStatus}
+                        size="small"
+                      >
+                        Làm mới
+                      </Button>
+                    </div>
+
+                    <Card size="small" style={{ backgroundColor: '#f9fafb' }}>
+                      <Spin spinning={loadingServiceStatus}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                          {/* Service Status */}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <Text>Trạng thái:</Text>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <Badge 
+                                status={serviceStatus.isRunning ? 'processing' : 'default'} 
+                              />
+                              <Text strong style={{ color: serviceStatus.isRunning ? '#52c41a' : '#d9d9d9' }}>
+                                {serviceStatus.isRunning ? 'Đang chạy' : 'Đã dừng'}
+                              </Text>
+                            </div>
+                          </div>
+
+                          {/* Current Settings Summary */}
+                          {serviceStatus.settings && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <Text>Cấu hình hiện tại:</Text>
+                              <Text type="secondary">
+                                Kiểm tra mỗi {serviceStatus.settings.checkInterval}p | 
+                                Chuyển key trong {serviceStatus.settings.beforeExpiry}p trước hết hạn
+                              </Text>
+                            </div>
+                          )}
+
+                          {/* Control Buttons */}
+                          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '1px solid #f0f0f0', paddingTop: 12 }}>
+                            <Button
+                              icon={<PlayCircleOutlined />}
+                              type="primary"
+                              size="small"
+                              onClick={startService}
+                              disabled={serviceStatus.isRunning}
+                            >
+                              Khởi động
+                            </Button>
+                            <Button
+                              icon={<StopOutlined />}
+                              size="small"
+                              onClick={stopService}
+                              disabled={!serviceStatus.isRunning}
+                            >
+                              Dừng lại
+                            </Button>
+                            <Button
+                              icon={<SyncOutlined />}
+                              size="small"
+                              onClick={runServiceNow}
+                              disabled={!serviceStatus.isRunning}
+                            >
+                              Chạy ngay
+                            </Button>
+                          </div>
+                        </div>
+                      </Spin>
+                    </Card>
+
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      Dịch vụ sẽ tự động khởi động khi server khởi động và settings được bật.
+                    </Text>
+                  </div>
                 </>
               )}
             </Form>

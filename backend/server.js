@@ -7,6 +7,8 @@ const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const { testConnection } = require('./config/database');
+// Import service after database config is loaded
+let autoAssignmentService;
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -108,6 +110,24 @@ const startServer = async () => {
       console.log(`📊 Environment: ${process.env.NODE_ENV}`);
       console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL}`);
       console.log(`💾 Database: ${process.env.DB_NAME}@${process.env.DB_HOST}`);
+      
+      // Start auto assignment service after 5 seconds
+      setTimeout(async () => {
+        try {
+          console.log('Starting auto assignment service...');
+          // Load service after database is ready
+          autoAssignmentService = require('./services/autoAssignmentService');
+          console.log('Service loaded successfully');
+          console.log('Service type:', typeof autoAssignmentService);
+          console.log('Service constructor:', autoAssignmentService.constructor.name);
+          console.log('Service methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(autoAssignmentService)));
+          console.log('Service loaded, starting...');
+          await autoAssignmentService.start();
+          console.log('Auto assignment service started successfully');
+        } catch (error) {
+          console.error('Failed to start auto assignment service:', error);
+        }
+      }, 5000);
     });
   } catch (error) {
     console.error('Failed to start server:', error);
@@ -118,11 +138,25 @@ const startServer = async () => {
 // Handle graceful shutdown
 process.on('SIGTERM', () => {
   console.log('SIGTERM received. Shutting down gracefully...');
+  try {
+    if (autoAssignmentService) {
+      autoAssignmentService.stop();
+    }
+  } catch (error) {
+    console.error('Error stopping auto assignment service:', error);
+  }
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
   console.log('SIGINT received. Shutting down gracefully...');
+  try {
+    if (autoAssignmentService) {
+      autoAssignmentService.stop();
+    }
+  } catch (error) {
+    console.error('Error stopping auto assignment service:', error);
+  }
   process.exit(0);
 });
 

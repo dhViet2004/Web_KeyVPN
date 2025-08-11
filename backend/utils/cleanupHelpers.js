@@ -44,15 +44,15 @@ async function cleanupAccountKeys() {
     // Step 3: Fix duplicate active assignments (keep only the most recent one)
     const duplicatesResult = await executeQuery(`
       UPDATE account_keys ak1
-      SET is_active = 0
-      WHERE ak1.is_active = 1
-      AND EXISTS (
-        SELECT 1 FROM account_keys ak2
-        WHERE ak2.account_id = ak1.account_id
-        AND ak2.key_id = ak1.key_id
-        AND ak2.is_active = 1
-        AND ak2.assigned_at > ak1.assigned_at
-      )
+      INNER JOIN (
+        SELECT account_id, key_id, MAX(assigned_at) as max_assigned_at
+        FROM account_keys
+        WHERE is_active = 1
+        GROUP BY account_id, key_id
+        HAVING COUNT(*) > 1
+      ) duplicates ON ak1.account_id = duplicates.account_id AND ak1.key_id = duplicates.key_id
+      SET ak1.is_active = 0
+      WHERE ak1.is_active = 1 AND ak1.assigned_at < duplicates.max_assigned_at
     `);
     
     if (duplicatesResult.success) {
@@ -132,6 +132,19 @@ async function cleanupKeyAssignments(keyId) {
       // Continue anyway, might not exist
     }
     
+    // Clean up gift_usage_history records that might prevent deletion
+    const giftHistoryResult = await executeQuery(
+      'DELETE FROM gift_usage_history WHERE key_id = ?',
+      [keyId]
+    );
+    
+    if (giftHistoryResult.success) {
+      console.log(`✅ Removed ${giftHistoryResult.data.affectedRows || 0} gift history records for key ${keyId}`);
+    } else {
+      console.warn(`⚠️ Failed to remove gift history records for key ${keyId}:`, giftHistoryResult.error);
+      // Continue anyway, might not exist
+    }
+    
     // Then remove all assignments for this key (both active and inactive)
     const result = await executeQuery(
       'DELETE FROM account_keys WHERE key_id = ?',
@@ -142,7 +155,7 @@ async function cleanupKeyAssignments(keyId) {
       console.log(`✅ Removed ${result.data.affectedRows || 0} assignments for key ${keyId}`);
       return { 
         success: true, 
-        affectedRows: (result.data.affectedRows || 0) + (historyResult.data?.affectedRows || 0)
+        affectedRows: (result.data.affectedRows || 0) + (historyResult.data?.affectedRows || 0) + (giftHistoryResult.data?.affectedRows || 0)
       };
     } else {
       console.error(`❌ Failed to clean assignments for key ${keyId}:`, result.error);
@@ -161,13 +174,25 @@ async function cleanupAccountAssignments(accountId) {
   console.log(`🧹 Cleaning up assignments for account ${accountId}...`);
   
   try {
-    // Get all keys assigned to this account for status updates
+    // Step 1: Clean up key_usage_history records for this account first
+    const historyCleanup = await executeQuery(
+      'DELETE FROM key_usage_history WHERE account_id = ?',
+      [accountId]
+    );
+    
+    if (historyCleanup.success) {
+      console.log(`✅ Removed ${historyCleanup.data.affectedRows || 0} history records for account ${accountId}`);
+    } else {
+      console.warn(`⚠️ Failed to cleanup history for account ${accountId}:`, historyCleanup.error);
+    }
+
+    // Step 2: Get all keys assigned to this account for status updates
     const assignedKeysResult = await executeQuery(
       'SELECT DISTINCT key_id FROM account_keys WHERE account_id = ? AND is_active = 1',
       [accountId]
     );
     
-    // Remove all assignments for this account
+    // Step 3: Remove all assignments for this account
     const deleteResult = await executeQuery(
       'DELETE FROM account_keys WHERE account_id = ?',
       [accountId]
@@ -198,7 +223,10 @@ async function cleanupAccountAssignments(accountId) {
         }
       }
       
-      return { success: true, affectedRows: deleteResult.data.affectedRows || 0 };
+      return { 
+        success: true, 
+        affectedRows: (deleteResult.data.affectedRows || 0) + (historyCleanup.data?.affectedRows || 0)
+      };
     } else {
       console.error(`❌ Failed to clean assignments for account ${accountId}:`, deleteResult.error);
       return { success: false, error: deleteResult.error };

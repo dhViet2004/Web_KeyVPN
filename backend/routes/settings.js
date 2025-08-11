@@ -5,6 +5,21 @@ const { authenticateToken } = require('./auth');
 
 const router = express.Router();
 
+// Helper function to get auto assignment service
+const getAutoAssignmentService = () => {
+  try {
+    console.log('Loading auto assignment service...');
+    const service = require('../services/autoAssignmentService');
+    console.log('Service loaded:', typeof service);
+    console.log('Service methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(service)));
+    console.log('Has getStatus:', typeof service.getStatus);
+    return service;
+  } catch (error) {
+    console.error('Error loading auto assignment service:', error);
+    throw new Error('Auto assignment service not available');
+  }
+};
+
 // Apply authentication to all routes
 router.use(authenticateToken);
 
@@ -324,6 +339,350 @@ router.put('/notifications/disable', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Internal server error'
+    });
+  }
+});
+
+// @route   GET /api/settings/auto-assignment
+// @desc    Get auto assignment settings
+// @access  Private
+router.get('/auto-assignment', async (req, res) => {
+  try {
+    const query = `
+      SELECT setting_key, setting_value 
+      FROM system_settings 
+      WHERE setting_key IN ('auto_assignment_enabled', 'auto_assignment_before_expiry', 'auto_assignment_check_interval')
+    `;
+
+    const result = await executeQuery(query);
+
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to get auto assignment settings'
+      });
+    }
+
+    // Convert to object
+    const settings = {
+      enabled: false,
+      beforeExpiry: 300, // minutes
+      checkInterval: 30,
+      deleteExpiredAccounts: true
+    };
+
+    // If no settings found, create default ones
+    if (!result.data || result.data.length === 0) {
+      console.log('No auto assignment settings found, creating defaults...');
+      
+      const defaultSettings = [
+        { key: 'auto_assignment_enabled', value: 'false', type: 'boolean' },
+        { key: 'auto_assignment_before_expiry', value: '300', type: 'number' },
+        { key: 'auto_assignment_check_interval', value: '30', type: 'number' },
+        { key: 'auto_assignment_delete_expired', value: 'true', type: 'boolean' }
+      ];
+      
+      for (const setting of defaultSettings) {
+        await executeQuery(`
+          INSERT INTO system_settings (setting_key, setting_value, setting_type, updated_by, created_at, updated_at) 
+          VALUES (?, ?, ?, 1, NOW(), NOW())
+        `, [setting.key, setting.value, setting.type]);
+      }
+      
+      console.log('Default auto assignment settings created');
+    } else {
+      // Parse existing settings
+      result.data.forEach(row => {
+        switch (row.setting_key) {
+          case 'auto_assignment_enabled':
+            settings.enabled = row.setting_value === 'true';
+            break;
+          case 'auto_assignment_before_expiry':
+            settings.beforeExpiry = parseInt(row.setting_value) || 300;
+            break;
+          case 'auto_assignment_check_interval':
+            settings.checkInterval = parseInt(row.setting_value) || 30;
+            break;
+          case 'auto_assignment_delete_expired':
+            settings.deleteExpiredAccounts = row.setting_value === 'true';
+            break;
+        }
+      });
+    }
+
+    res.json({
+      success: true,
+      data: settings
+    });
+
+  } catch (error) {
+    console.error('Get auto assignment settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   PUT /api/settings/auto-assignment
+// @desc    Update auto assignment settings
+// @access  Private
+router.put('/auto-assignment', [
+  body('enabled').optional().isBoolean().withMessage('Enabled must be boolean'),
+  body('beforeExpiry').optional().isInt({ min: 1, max: 1440 }).withMessage('Before expiry must be between 1-1440 minutes'),
+  body('checkInterval').optional().isInt({ min: 1, max: 360 }).withMessage('Check interval must be between 1-360 minutes'),
+  body('deleteExpiredAccounts').optional().isBoolean().withMessage('Delete expired accounts must be boolean')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log('Validation errors:', errors.array());
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { enabled, beforeExpiry, checkInterval, deleteExpiredAccounts } = req.body;
+    console.log('Update auto assignment request body:', { enabled, beforeExpiry, checkInterval, deleteExpiredAccounts });
+
+    // Get current settings first
+    const currentQuery = `
+      SELECT setting_key, setting_value 
+      FROM system_settings 
+      WHERE setting_key IN ('auto_assignment_enabled', 'auto_assignment_before_expiry', 'auto_assignment_check_interval', 'auto_assignment_delete_expired')
+    `;
+
+    const currentResult = await executeQuery(currentQuery);
+    
+    const currentSettings = {
+      enabled: false,
+      beforeExpiry: 300,
+      checkInterval: 30,
+      deleteExpiredAccounts: true
+    };
+
+    if (currentResult.success) {
+      currentResult.data.forEach(row => {
+        switch (row.setting_key) {
+          case 'auto_assignment_enabled':
+            currentSettings.enabled = row.setting_value === 'true';
+            break;
+          case 'auto_assignment_before_expiry':
+            currentSettings.beforeExpiry = parseInt(row.setting_value) || 300;
+            break;
+          case 'auto_assignment_check_interval':
+            currentSettings.checkInterval = parseInt(row.setting_value) || 30;
+            break;
+          case 'auto_assignment_delete_expired':
+            currentSettings.deleteExpiredAccounts = row.setting_value === 'true';
+            break;
+        }
+      });
+    }
+
+    // Merge with new values
+    const finalSettings = {
+      enabled: enabled !== undefined ? enabled : currentSettings.enabled,
+      beforeExpiry: beforeExpiry !== undefined ? beforeExpiry : currentSettings.beforeExpiry,
+      checkInterval: checkInterval !== undefined ? checkInterval : currentSettings.checkInterval,
+      deleteExpiredAccounts: deleteExpiredAccounts !== undefined ? deleteExpiredAccounts : currentSettings.deleteExpiredAccounts
+    };
+
+    // Update or insert settings
+    const settings = [
+      { key: 'auto_assignment_enabled', value: finalSettings.enabled.toString(), type: 'boolean' },
+      { key: 'auto_assignment_before_expiry', value: finalSettings.beforeExpiry.toString(), type: 'number' },
+      { key: 'auto_assignment_check_interval', value: finalSettings.checkInterval.toString(), type: 'number' },
+      { key: 'auto_assignment_delete_expired', value: finalSettings.deleteExpiredAccounts.toString(), type: 'boolean' }
+    ];
+
+    for (const setting of settings) {
+      const upsertQuery = `
+        INSERT INTO system_settings (setting_key, setting_value, setting_type, updated_by) 
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE 
+        setting_value = VALUES(setting_value),
+        setting_type = VALUES(setting_type),
+        updated_by = VALUES(updated_by),
+        updated_at = CURRENT_TIMESTAMP
+      `;
+
+      const result = await executeQuery(upsertQuery, [
+        setting.key,
+        setting.value,
+        setting.type,
+        req.user.id
+      ]);
+
+      if (!result.success) {
+        return res.status(500).json({
+          success: false,
+          message: `Failed to update ${setting.key}`
+        });
+      }
+    }
+
+    // Restart auto assignment service with new settings
+    if (finalSettings.enabled) {
+      const autoAssignmentService = getAutoAssignmentService();
+      autoAssignmentService.stop();
+      setTimeout(() => {
+        autoAssignmentService.start();
+      }, 1000);
+    } else {
+      const autoAssignmentService = getAutoAssignmentService();
+      autoAssignmentService.stop();
+    }
+
+    res.json({
+      success: true,
+      message: 'Auto assignment settings updated successfully'
+    });
+
+  } catch (error) {
+    console.error('Update auto assignment settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   GET /api/settings/auto-assignment/status
+// @desc    Get auto assignment service status
+// @access  Private
+router.get('/auto-assignment/status', async (req, res) => {
+  try {
+    const autoAssignmentService = getAutoAssignmentService();
+    const status = autoAssignmentService.getStatus();
+    const settings = await autoAssignmentService.getSettings();
+    
+    res.json({
+      success: true,
+      data: {
+        ...status,
+        settings
+      }
+    });
+  } catch (error) {
+    console.error('Get auto assignment status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   POST /api/settings/auto-assignment/start
+// @desc    Start auto assignment service manually
+// @access  Private
+router.post('/auto-assignment/start', async (req, res) => {
+  try {
+    const autoAssignmentService = getAutoAssignmentService();
+    await autoAssignmentService.start();
+    
+    res.json({
+      success: true,
+      message: 'Auto assignment service started'
+    });
+  } catch (error) {
+    console.error('Start auto assignment service error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to start auto assignment service'
+    });
+  }
+});
+
+// @route   POST /api/settings/auto-assignment/stop
+// @desc    Stop auto assignment service manually
+// @access  Private
+router.post('/auto-assignment/stop', async (req, res) => {
+  try {
+    const autoAssignmentService = getAutoAssignmentService();
+    autoAssignmentService.stop();
+    
+    res.json({
+      success: true,
+      message: 'Auto assignment service stopped'
+    });
+  } catch (error) {
+    console.error('Stop auto assignment service error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to stop auto assignment service'
+    });
+  }
+});
+
+// @route   POST /api/settings/auto-assignment/run-now
+// @desc    Trigger auto assignment process immediately
+// @access  Private
+router.post('/auto-assignment/run-now', async (req, res) => {
+  try {
+    const autoAssignmentService = getAutoAssignmentService();
+    const settings = await autoAssignmentService.getSettings();
+    
+    if (!settings.enabled) {
+      return res.status(400).json({
+        success: false,
+        message: 'Auto assignment is disabled'
+      });
+    }
+
+    // Run the process in background
+    setTimeout(async () => {
+      await autoAssignmentService.processExpiredAccounts(settings);
+    }, 100);
+    
+    res.json({
+      success: true,
+      message: 'Auto assignment process started'
+    });
+  } catch (error) {
+    console.error('Run auto assignment now error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to run auto assignment'
+    });
+  }
+});
+
+// @route   POST /api/settings/auto-assignment/cleanup
+// @desc    Manually cleanup expired accounts
+// @access  Private
+router.post('/auto-assignment/cleanup', async (req, res) => {
+  try {
+    const autoAssignmentService = getAutoAssignmentService();
+    
+    // Get current settings
+    const settings = await autoAssignmentService.getSettings();
+    
+    console.log('Manual cleanup requested - current settings:', settings);
+
+    if (!settings.deleteExpiredAccounts) {
+      return res.json({
+        success: false,
+        message: 'Account deletion is disabled in settings'
+      });
+    }
+
+    // Run cleanup in background
+    setTimeout(async () => {
+      await autoAssignmentService.forceCleanupNow();
+    }, 100);
+    
+    res.json({
+      success: true,
+      message: 'Cleanup process started - check server logs for results'
+    });
+  } catch (error) {
+    console.error('Manual cleanup error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to run cleanup process'
     });
   }
 });

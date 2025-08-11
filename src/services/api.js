@@ -233,6 +233,16 @@ export const settingsAPI = {
   // Update notification
   updateNotification: (notificationData) =>
     apiClient.put('/settings/notifications', notificationData),
+
+  // Disable all notifications
+  disableNotifications: () => apiClient.put('/settings/notifications/disable'),
+
+  // Update auto assignment settings
+  updateAutoAssignment: (autoAssignmentData) =>
+    apiClient.put('/settings/auto-assignment', autoAssignmentData),
+
+  // Get auto assignment settings
+  getAutoAssignment: () => apiClient.get('/settings/auto-assignment'),
 };
 
 // Statistics API
@@ -352,5 +362,47 @@ export const utils = {
     }
     
     return error.message || 'An unexpected error occurred';
+  },
+};
+
+// Auto Assignment API methods
+export const autoAssignmentAPI = {
+  // Get service status
+  getStatus: async () => {
+    return await apiClient.request('/settings/auto-assignment/status');
+  },
+
+  // Get settings
+  getSettings: async () => {
+    return await apiClient.request('/settings/auto-assignment');
+  },
+
+  // Update settings
+  updateSettings: async (settings) => {
+    return await apiClient.request('/settings/auto-assignment', {
+      method: 'PUT',
+      body: JSON.stringify(settings)
+    });
+  },
+
+  // Start service
+  start: async () => {
+    return await apiClient.request('/settings/auto-assignment/start', {
+      method: 'POST',
+    });
+  },
+
+  // Stop service
+  stop: async () => {
+    return await apiClient.request('/settings/auto-assignment/stop', {
+      method: 'POST',
+    });
+  },
+
+  // Run now
+  runNow: async () => {
+    return await apiClient.request('/settings/auto-assignment/run-now', {
+      method: 'POST',
+    });
   },
 };

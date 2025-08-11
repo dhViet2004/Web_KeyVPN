@@ -18,10 +18,10 @@ const getDefaultSettings = () => ({
     allowMultipleUse: false,
     maxUses: 1
   },
-  autoRenewal: {
+  autoAssignment: {
     enabled: false,
-    renewBeforeExpiry: 7,
-    defaultDuration: 30
+    beforeExpiry: 300, // phút (5 giờ)
+    checkInterval: 30 // phút
   },
   system: {
     darkMode: false,
