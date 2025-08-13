@@ -316,5 +316,45 @@ router.post('/change-password', [
   }
 });
 
+// @route   POST /api/auth/force-auto-assignment
+// @desc    Force run auto assignment service (for testing)
+// @access  Private (Admin only)
+router.post('/force-auto-assignment', authenticateToken, async (req, res) => {
+  try {
+    console.log(`Admin ${req.user.username} requested force auto assignment`);
+
+    // Import and run the service
+    const autoAssignmentService = require('../services/autoAssignmentService');
+    
+    console.log('📊 Auto assignment service status before:', autoAssignmentService.getStatus());
+    
+    const result = await autoAssignmentService.forceRun();
+    
+    console.log('📊 Auto assignment service status after:', autoAssignmentService.getStatus());
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: 'Auto assignment force run completed successfully',
+        data: result
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: 'Auto assignment force run failed',
+        error: result.error
+      });
+    }
+
+  } catch (error) {
+    console.error('Force auto assignment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
 module.exports = router;
 module.exports.authenticateToken = authenticateToken;

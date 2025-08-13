@@ -1029,84 +1029,76 @@ class AutoAssignmentService {
   }
 
   // Delete expired account immediately after key transfer (prevents memory bloat)
+  // Delete expired account immediately after key transfer (prevents memory bloat)
   async deleteExpiredAccountImmediate(expiredAccount) {
     try {
-      console.log(`🗑️ Immediately deleting account ${expiredAccount.username} after key transfer...`);
+      console.log(`🗑️ Deleting expired account ${expiredAccount.username}...`);
 
-      // Start transaction for safe deletion
-      await executeQuery('START TRANSACTION');
+      // First, DELETE any remaining account_keys records for this account
+      const deleteKeysQuery = `
+        DELETE FROM account_keys 
+        WHERE account_id = ?
+      `;
+      
+      const deleteKeysResult = await executeQuery(deleteKeysQuery, [expiredAccount.account_id]);
+      console.log(`🗑️ Deleted ${deleteKeysResult.affectedRows || 0} account_keys records for account ${expiredAccount.username}`);
 
-      try {
-        // First, COMPLETELY DELETE any remaining account_keys records for this account to prevent orphaned data
-        const deleteKeysQuery = `
-          DELETE FROM account_keys 
-          WHERE account_id = ?
+      // Check if account has history records that prevent deletion
+      const historyCheckQuery = `
+        SELECT COUNT(*) as history_count 
+        FROM key_usage_history 
+        WHERE account_id = ?
+      `;
+      
+      const historyResult = await executeQuery(historyCheckQuery, [expiredAccount.account_id]);
+      
+      if (historyResult.success && historyResult.data[0].history_count > 0) {
+        console.log(`📚 Account ${expiredAccount.username} has ${historyResult.data[0].history_count} history records - setting inactive instead of deleting`);
+        
+        // Set account as inactive to preserve foreign key relationships
+        const inactivateQuery = `
+          UPDATE vpn_accounts 
+          SET is_active = 0, updated_at = NOW()
+          WHERE id = ?
         `;
         
-        const deleteKeysResult = await executeQuery(deleteKeysQuery, [expiredAccount.account_id]);
-        console.log(`�️ Deleted ${deleteKeysResult.affectedRows || 0} account_keys records for account ${expiredAccount.username}`);
-
-        // Check if account has history records that prevent deletion
-        const historyCheckQuery = `
-          SELECT COUNT(*) as history_count 
-          FROM key_usage_history 
-          WHERE account_id = ?
-        `;
+        const inactivateResult = await executeQuery(inactivateQuery, [expiredAccount.account_id]);
         
-        const historyResult = await executeQuery(historyCheckQuery, [expiredAccount.account_id]);
-        
-        if (historyResult.success && historyResult.data[0].history_count > 0) {
-          console.log(`📚 Account ${expiredAccount.username} has ${historyResult.data[0].history_count} history records - setting inactive instead of deleting`);
-          
-          // Set account as inactive to preserve foreign key relationships
-          const inactivateQuery = `
-            UPDATE vpn_accounts 
-            SET is_active = 0, updated_at = NOW()
-            WHERE id = ?
-          `;
-          
-          const inactivateResult = await executeQuery(inactivateQuery, [expiredAccount.account_id]);
-          
-          if (inactivateResult.success && inactivateResult.affectedRows > 0) {
-            console.log(`✅ Successfully set account ${expiredAccount.username} as inactive (preserving history)`);
-          } else {
-            throw new Error(`Failed to inactivate account: ${inactivateResult.error}`);
-          }
+        if (inactivateResult.success && inactivateResult.affectedRows > 0) {
+          console.log(`✅ Successfully set account ${expiredAccount.username} as inactive (preserving history)`);
+          return {
+            success: true,
+            action: 'inactivated',
+            message: `Account ${expiredAccount.username} set as inactive`
+          };
         } else {
-          // Safe to delete completely if no history records
-          console.log(`🗑️ Account ${expiredAccount.username} has no history records - safe to delete completely`);
-          
-          const deleteAccountQuery = `
-            DELETE FROM vpn_accounts 
-            WHERE id = ?
-          `;
-
-          const deleteResult = await executeQuery(deleteAccountQuery, [expiredAccount.account_id]);
-
-          if (deleteResult.success && deleteResult.affectedRows > 0) {
-            console.log(`🗑️ ✅ Successfully deleted account ${expiredAccount.username} completely (memory freed)`);
-          } else {
-            throw new Error(`Failed to delete account: ${deleteResult.error}`);
-          }
+          throw new Error(`Failed to inactivate account: ${inactivateResult.error}`);
         }
-
-        // Commit transaction
-        await executeQuery('COMMIT');
+      } else {
+        // Safe to delete completely if no history records
+        console.log(`🗑️ Account ${expiredAccount.username} has no history records - deleting completely`);
         
-        return {
-          success: true,
-          action: historyResult.data[0].history_count > 0 ? 'inactivated' : 'deleted',
-          message: `Account ${expiredAccount.username} processed successfully`
-        };
+        const deleteAccountQuery = `
+          DELETE FROM vpn_accounts 
+          WHERE id = ?
+        `;
 
-      } catch (error) {
-        // Rollback on error
-        await executeQuery('ROLLBACK');
-        throw error;
+        const deleteResult = await executeQuery(deleteAccountQuery, [expiredAccount.account_id]);
+
+        if (deleteResult.success && deleteResult.affectedRows > 0) {
+          console.log(`🗑️ ✅ Successfully deleted account ${expiredAccount.username} completely`);
+          return {
+            success: true,
+            action: 'deleted',
+            message: `Account ${expiredAccount.username} deleted completely`
+          };
+        } else {
+          throw new Error(`Failed to delete account: ${deleteResult.error}`);
+        }
       }
 
     } catch (error) {
-      console.error(`❌ Failed to immediately delete account ${expiredAccount.username}: ${error.message}`);
+      console.error(`❌ Failed to delete account ${expiredAccount.username}: ${error.message}`);
       
       // Fallback: at least try to set as inactive
       try {
@@ -1114,6 +1106,11 @@ class AutoAssignmentService {
         const fallbackResult = await executeQuery(fallbackQuery, [expiredAccount.account_id]);
         if (fallbackResult.success) {
           console.log(`⚠️ Fallback: Set ${expiredAccount.username} as inactive`);
+          return {
+            success: false,
+            action: 'fallback_inactive',
+            error: error.message
+          };
         }
       } catch (fallbackError) {
         console.error(`❌ Fallback failed too: ${fallbackError.message}`);
@@ -1309,6 +1306,34 @@ class AutoAssignmentService {
       isRunning: this.isRunning,
       intervalId: this.intervalId
     };
+  }
+
+  // Force run auto assignment immediately (for testing)
+  async forceRun() {
+    try {
+      console.log('🚀 Force running auto assignment...');
+      
+      const settings = await this.getSettings();
+      console.log('📋 Current settings:', settings);
+      
+      if (!settings.enabled) {
+        console.log('⚠️ Auto assignment is disabled - enabling for this run');
+        settings.enabled = true;
+      }
+      
+      // Process expired accounts
+      await this.processExpiredAccounts(settings);
+      
+      // Cleanup expired accounts
+      await this.cleanupExpiredAccounts(settings);
+      
+      console.log('✅ Force run completed');
+      return { success: true, message: 'Force run completed successfully' };
+      
+    } catch (error) {
+      console.error('❌ Force run failed:', error);
+      return { success: false, error: error.message };
+    }
   }
 
   // Force cleanup expired accounts immediately (for manual testing)
