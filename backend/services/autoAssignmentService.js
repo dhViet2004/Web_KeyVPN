@@ -100,16 +100,18 @@ class AutoAssignmentService {
   }
 
   // Process accounts that are expiring soon and transfer keys to new empty accounts
+  // IMPORTANT: Only process keys that are ALREADY ASSIGNED to accounts, not keys in 'chờ' status waiting for user activation
   async processExpiredAccounts(settings) {
     try {
       console.log('🔍 Checking for accounts expiring soon and available new accounts...');
       console.log(`🕐 Looking for accounts expiring within ${settings.beforeExpiry} minutes`);
+      console.log('ℹ️ POLICY: Only processing keys already assigned to accounts, NOT keys in "chờ" status waiting for user activation');
 
-      // STEP 1: Process keys from expiring/expired accounts
+      // STEP 1: Process keys from expiring/expired accounts (keys that are CURRENTLY assigned)
       await this.processKeysFromExpiredAccounts(settings);
       
-      // STEP 2: Process orphaned keys (keys in 'chờ' status without any account assignment)
-      await this.processOrphanedKeys(settings);
+      // STEP 2: Process orphaned keys (keys that were PREVIOUSLY assigned but account was deleted)
+      await this.processOrphanedKeys();
 
     } catch (error) {
       console.error('Error processing expired accounts:', error);
@@ -117,122 +119,93 @@ class AutoAssignmentService {
   }
 
   // Process keys from expiring/expired accounts
+  // SIMPLE APPROACH: Just update account_keys table directly
   async processKeysFromExpiredAccounts(settings) {
     try {
       console.log('🔍 Step 1: Checking keys from expiring/expired accounts...');
+      console.log('ℹ️ SIMPLE APPROACH: Find expiring accounts → Get their keys → Transfer to new accounts');
 
-      // Find accounts that will expire within the specified time (in minutes) and group all keys by account
-      // ALSO include accounts that are already expired and still have keys
+      // Find accounts that are expiring/expired and have keys
       const expiringAccountsQuery = `
         SELECT 
           va.id as account_id, 
           va.username, 
           va.expires_at,
-          GROUP_CONCAT(ak.key_id) as key_ids,
-          GROUP_CONCAT(vk.key_type) as key_types,
-          COUNT(ak.key_id) as key_count,
-          TIMESTAMPDIFF(MINUTE, NOW(), va.expires_at) as minutes_remaining,
-          va.is_active
+          TIMESTAMPDIFF(MINUTE, NOW(), va.expires_at) as minutes_remaining
         FROM vpn_accounts va
         INNER JOIN account_keys ak ON va.id = ak.account_id
-        INNER JOIN vpn_keys vk ON ak.key_id = vk.id
         WHERE va.expires_at IS NOT NULL
         AND ak.is_active = 1
         AND (
-          -- Accounts expiring within the specified time (including already expired)
           TIMESTAMPDIFF(MINUTE, NOW(), va.expires_at) <= ?
-          OR
-          -- Already expired accounts that still have keys
-          va.expires_at <= NOW()
+          OR va.expires_at <= NOW()
         )
-        GROUP BY va.id, va.username, va.expires_at, va.is_active
+        GROUP BY va.id, va.username, va.expires_at
         ORDER BY va.expires_at ASC
       `;
 
-      console.log(`🔍 Executing expired accounts query with beforeExpiry: ${settings.beforeExpiry}`);
+      console.log(`🔍 Finding accounts expiring within ${settings.beforeExpiry} minutes...`);
       const expiringResult = await executeQuery(expiringAccountsQuery, [settings.beforeExpiry]);
 
-      console.log(`📊 Expired accounts query result:`, {
-        success: expiringResult.success,
-        dataLength: expiringResult.data?.length || 0,
-        error: expiringResult.error
+      if (!expiringResult.success || expiringResult.data.length === 0) {
+        console.log('✅ No expired/expiring accounts with keys found');
+        return;
+      }
+
+      console.log(`📋 Found ${expiringResult.data.length} expiring accounts:`);
+      expiringResult.data.forEach(acc => {
+        const expiryStatus = acc.minutes_remaining <= 0 ? 'EXPIRED' : `expiring in ${acc.minutes_remaining}min`;
+        console.log(`  - ${acc.username} (${expiryStatus})`);
       });
 
-      if (expiringResult.success && expiringResult.data.length > 0) {
-        console.log('📋 Accounts found with keys to transfer from expired/expiring accounts:');
-        expiringResult.data.forEach(acc => {
-          const keyIds = acc.key_ids ? acc.key_ids.split(',') : [];
-          const keyTypes = acc.key_types ? acc.key_types.split(',') : [];
-          const accountStatus = acc.is_active ? 'active' : 'inactive';
-          const expiryStatus = acc.minutes_remaining <= 0 ? 'EXPIRED' : 'expiring soon';
-          
-          console.log(`  - Account: ${acc.username} (${accountStatus}, ${expiryStatus})`);
-          console.log(`    Expires: ${acc.expires_at}, minutes remaining: ${acc.minutes_remaining}`);
-          console.log(`    Keys: ${acc.key_count} keys - IDs: [${keyIds.join(', ')}], Types: [${keyTypes.join(', ')}]`);
-        });
-
-        // Create queue from expired accounts
-        const keyQueue = [];
-        
-        for (const expiredAccount of expiringResult.data) {
-          const keyIds = expiredAccount.key_ids ? expiredAccount.key_ids.split(',').map(id => parseInt(id.trim())) : [];
-          const keyTypes = expiredAccount.key_types ? expiredAccount.key_types.split(',').map(type => type.trim()) : [];
-          
-          // Add all keys from this account to the queue
-          for (let i = 0; i < keyIds.length; i++) {
-            const keyId = keyIds[i];
-            const keyType = keyTypes[i] || '2key';
-            
-            keyQueue.push({
-              keyId,
-              keyType,
-              sourceAccount: {
-                account_id: expiredAccount.account_id,
-                username: expiredAccount.username,
-                expires_at: expiredAccount.expires_at,
-                minutes_remaining: expiredAccount.minutes_remaining
-              }
-            });
-          }
-        }
-
-        console.log(`📋 Created key transfer queue from expired accounts: ${keyQueue.length} keys`);
-        
-        if (keyQueue.length > 0) {
-          await this.processKeyQueue(keyQueue, settings);
-        }
-      } else {
-        console.log('✅ No expired/expiring accounts with keys found');
+      // Process each expiring account
+      for (const account of expiringResult.data) {
+        await this.transferAllKeysFromAccount(account);
       }
+
     } catch (error) {
       console.error('Error processing keys from expired accounts:', error);
     }
   }
 
-  // Process orphaned keys (keys in 'chờ' status without any account assignment) 
-  async processOrphanedKeys(settings) {
+  // Process orphaned keys - ONLY keys that were PREVIOUSLY assigned to expired accounts
+  // DO NOT auto-assign keys in 'chờ' status that have never been activated by users
+  async processOrphanedKeys() {
     try {
-      console.log('🔍 Step 2: Checking orphaned keys (keys in "chờ" status without account assignment)...');
+      console.log('🔍 Step 2: Checking orphaned keys from expired accounts...');
 
-      // Find keys that are in 'chờ' status and not assigned to any account
+      // SIMPLE: Find keys that were PREVIOUSLY assigned but account was deleted/expired
       const orphanedKeysQuery = `
         SELECT 
           vk.id as key_id,
           vk.code,
           vk.key_type,
           vk.status,
-          vk.created_at
+          vk.created_at,
+          kuh.account_id as last_account_id,
+          va.username as last_account_username,
+          va.expires_at as last_account_expires
         FROM vpn_keys vk
+        INNER JOIN key_usage_history kuh ON vk.id = kuh.key_id
+        LEFT JOIN vpn_accounts va ON kuh.account_id = va.id
         WHERE vk.status = 'chờ'
         AND vk.id NOT IN (
           SELECT DISTINCT ak.key_id 
           FROM account_keys ak 
           WHERE ak.is_active = 1
         )
+        AND kuh.action IN ('activated', 'transferred')
+        AND (
+          -- Account was deleted (no longer exists)
+          va.id IS NULL
+          OR
+          -- Account exists but is expired and inactive
+          (va.expires_at <= NOW() AND va.is_active = 0)
+        )
         ORDER BY vk.created_at ASC
       `;
 
-      console.log('🔍 Executing orphaned keys query...');
+      console.log('🔍 Executing orphaned keys query (only previously assigned keys)...');
       const orphanedResult = await executeQuery(orphanedKeysQuery);
 
       console.log(`📊 Orphaned keys query result:`, {
@@ -242,34 +215,35 @@ class AutoAssignmentService {
       });
 
       if (orphanedResult.success && orphanedResult.data.length > 0) {
-        console.log('📋 Orphaned keys found (not assigned to any account):');
+        console.log('📋 Orphaned keys found (previously assigned to expired/deleted accounts):');
         orphanedResult.data.forEach(key => {
-          console.log(`  - Key: ${key.code} (${key.key_type}) - ID: ${key.key_id}, Status: ${key.status}`);
+          console.log(`  - Key: ${key.code} (${key.key_type}) - ID: ${key.key_id}`);
+          console.log(`    Previous account: ${key.last_account_username || 'DELETED'} (expires: ${key.last_account_expires || 'N/A'})`);
         });
 
-        // Create queue from orphaned keys
-        const orphanedQueue = [];
-        
+        // Process each orphaned key individually using SIMPLE approach
         for (const key of orphanedResult.data) {
-          orphanedQueue.push({
-            keyId: key.key_id,
-            keyType: key.key_type,
-            sourceAccount: {
-              account_id: null,
-              username: 'ORPHANED_KEY',
-              expires_at: null,
-              minutes_remaining: null
-            }
-          });
-        }
-
-        console.log(`📋 Created orphaned key assignment queue: ${orphanedQueue.length} keys`);
-        
-        if (orphanedQueue.length > 0) {
-          await this.processKeyQueue(orphanedQueue, settings);
+          await this.transferKeySimple(key.key_id, key.key_type);
         }
       } else {
-        console.log('✅ No orphaned keys found');
+        console.log('✅ No orphaned keys from expired accounts found');
+        
+        // Log info about keys in 'chờ' status that are waiting for user activation
+        const waitingKeysQuery = `
+          SELECT COUNT(*) as waiting_keys
+          FROM vpn_keys vk
+          WHERE vk.status = 'chờ'
+          AND vk.id NOT IN (
+            SELECT DISTINCT key_id 
+            FROM key_usage_history 
+            WHERE action IN ('activated', 'transferred')
+          )
+        `;
+        
+        const waitingResult = await executeQuery(waitingKeysQuery);
+        if (waitingResult.success && waitingResult.data[0].waiting_keys > 0) {
+          console.log(`ℹ️ There are ${waitingResult.data[0].waiting_keys} keys in 'chờ' status waiting for user activation (these will NOT be auto-assigned)`);
+        }
       }
     } catch (error) {
       console.error('Error processing orphaned keys:', error);
@@ -459,86 +433,158 @@ class AutoAssignmentService {
     }
   }
 
-  // Transfer all keys from expiring account to new available accounts
-  async transferAccountKeysToNewAccounts(expiredAccount, settings) {
+  // SIMPLE: Transfer all keys from an expiring account to new accounts  
+  async transferAllKeysFromAccount(account) {
     try {
-      console.log(`🔄 Processing account: ${expiredAccount.username} (expires in ${expiredAccount.minutes_remaining} minutes)`);
-      console.log(`📋 Account has ${expiredAccount.key_count} keys to transfer`);
+      console.log(`🔄 Processing account: ${account.username}...`);
+
+      // Get all keys assigned to this account
+      const getKeysQuery = `
+        SELECT ak.key_id, vk.key_type, vk.code
+        FROM account_keys ak
+        INNER JOIN vpn_keys vk ON ak.key_id = vk.id
+        WHERE ak.account_id = ? AND ak.is_active = 1
+        ORDER BY vk.key_type
+      `;
+
+      const keysResult = await executeQuery(getKeysQuery, [account.account_id]);
       
-      const keyIds = expiredAccount.key_ids ? expiredAccount.key_ids.split(',').map(id => parseInt(id.trim())) : [];
-      const keyTypes = expiredAccount.key_types ? expiredAccount.key_types.split(',').map(type => type.trim()) : [];
-      
-      if (keyIds.length === 0) {
-        console.log(`⚠️ No keys found for account ${expiredAccount.username}`);
+      if (!keysResult.success || keysResult.data.length === 0) {
+        console.log(`⚠️ No keys found for account ${account.username}`);
         return;
       }
 
-      // Group keys by type to optimize assignment
-      const keysByType = {};
-      for (let i = 0; i < keyIds.length; i++) {
-        const keyId = keyIds[i];
-        const keyType = keyTypes[i] || '2key'; // default to 2key if type missing
-        
-        if (!keysByType[keyType]) {
-          keysByType[keyType] = [];
-        }
-        keysByType[keyType].push(keyId);
-      }
+      console.log(`📋 Found ${keysResult.data.length} keys to transfer from ${account.username}:`);
+      keysResult.data.forEach(key => {
+        console.log(`  - ${key.code} (${key.key_type})`);
+      });
 
-      console.log('📋 Keys grouped by type:', keysByType);
-
-      let totalKeysTransferred = 0;
-      let keysNotTransferred = [];
-
-      // Process each key type group
-      for (const [keyType, keysOfType] of Object.entries(keysByType)) {
-        console.log(`\n🔑 Processing ${keysOfType.length} keys of type: ${keyType}`);
-        
-        // Always process keys individually to ensure all keys get assigned
-        // This prevents issues where multiple keys can't fit in a single target account
-        console.log(`🔄 Processing ${keysOfType.length} ${keyType} keys individually to maximize assignment success...`);
-        
-        for (let i = 0; i < keysOfType.length; i++) {
-          const keyId = keysOfType[i];
-          console.log(`📋 Processing key ${i + 1}/${keysOfType.length}: ${keyId} (${keyType})`);
-          
-          const transferred = await this.transferSingleKey(keyId, keyType, expiredAccount);
-          if (transferred) {
-            totalKeysTransferred++;
-            console.log(`✅ Successfully transferred key ${keyId} (${i + 1}/${keysOfType.length})`);
-          } else {
-            keysNotTransferred.push({ keyId, keyType });
-            console.log(`❌ Failed to transfer key ${keyId} (${i + 1}/${keysOfType.length})`);
-          }
-          
-          // Small delay between key transfers to avoid overwhelming database
-          if (i < keysOfType.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 200));
-          }
+      // Transfer each key individually
+      let transferred = 0;
+      for (const key of keysResult.data) {
+        const success = await this.transferKeySimple(key.key_id, key.key_type);
+        if (success) {
+          transferred++;
+          console.log(`✅ Transferred key ${key.code} (${transferred}/${keysResult.data.length})`);
+        } else {
+          console.log(`❌ Failed to transfer key ${key.code}`);
         }
       }
 
-      console.log(`\n✅ Transfer summary for account ${expiredAccount.username}:`);
-      console.log(`   - Keys transferred: ${totalKeysTransferred}/${keyIds.length}`);
-      if (keysNotTransferred.length > 0) {
-        console.log(`   - Keys not transferred: ${keysNotTransferred.length}`);
-        keysNotTransferred.forEach(key => {
-          console.log(`     * Key ${key.keyId} (${key.keyType}) - no suitable target account`);
+      console.log(`✅ Transfer completed for ${account.username}: ${transferred}/${keysResult.data.length} keys transferred`);
+
+      // Delete expired account if all keys transferred
+      if (transferred === keysResult.data.length) {
+        console.log(`�️ All keys transferred, deleting expired account ${account.username}...`);
+        await this.deleteExpiredAccountImmediate({
+          account_id: account.account_id,
+          username: account.username
         });
       }
 
-      // Xóa tài khoản cũ ngay sau khi chuyển key thành công (để tránh tràn bộ nhớ)
-      if (totalKeysTransferred > 0 && settings.deleteExpiredAccounts) {
-        console.log(`🗑️ Auto-deleting source account after successful key transfer...`);
-        await this.deleteExpiredAccountImmediate(expiredAccount);
-      } else if (totalKeysTransferred === 0) {
-        console.log(`⚠️ No keys transferred from ${expiredAccount.username} - keeping account for retry`);
-      } else if (!settings.deleteExpiredAccounts) {
-        console.log(`ℹ️ Account deletion disabled - keeping ${expiredAccount.username}`);
+    } catch (error) {
+      console.error(`❌ Error transferring keys from ${account.username}:`, error);
+    }
+  }
+
+  // SIMPLE: Transfer a single key to a suitable target account
+  async transferKeySimple(keyId, keyType) {
+    try {
+      console.log(`� Transferring key ${keyId} (${keyType})...`);
+
+      // Find suitable target account
+      const targetAccount = await this.findSuitableTargetAccountSimple(keyType);
+      if (!targetAccount) {
+        console.log(`❌ No suitable target account found for ${keyType} key ${keyId}`);
+        return false;
+      }
+
+      console.log(`🎯 Target account: ${targetAccount.username} (${targetAccount.assigned_keys}/${keyType === '1key' ? 1 : keyType === '2key' ? 2 : 3})`);
+
+      // SIMPLE UPDATE: Just change the account_id in account_keys table
+      const updateQuery = `
+        UPDATE account_keys 
+        SET account_id = ?, assigned_at = NOW(), assigned_by = 1
+        WHERE key_id = ? AND is_active = 1
+      `;
+
+      const updateResult = await executeQuery(updateQuery, [targetAccount.id, keyId]);
+      
+      if (updateResult.success && updateResult.affectedRows > 0) {
+        // Log the transfer in history
+        const historyQuery = `
+          INSERT INTO key_usage_history (key_id, account_id, action, notes, created_at) 
+          VALUES (?, ?, 'transferred', ?, NOW())
+        `;
+        
+        const notes = `Auto transferred to ${targetAccount.username}`;
+        await executeQuery(historyQuery, [keyId, targetAccount.id, notes]);
+        
+        console.log(`✅ Successfully transferred key ${keyId} to ${targetAccount.username}`);
+        return true;
+      } else {
+        console.log(`❌ Failed to update key ${keyId} assignment: ${updateResult.error}`);
+        return false;
       }
 
     } catch (error) {
-      console.error(`❌ Failed to transfer keys from account ${expiredAccount.username}:`, error.message);
+      console.error(`❌ Error transferring key ${keyId}:`, error);
+      return false;
+    }
+  }
+
+  // SIMPLE: Find target account with available slots for key type
+  async findSuitableTargetAccountSimple(keyType) {
+    try {
+      const maxSlots = keyType === '1key' ? 1 : keyType === '2key' ? 2 : 3;
+      
+      // Find accounts with available slots, prioritizing accounts with same key type
+      const targetQuery = `
+        SELECT 
+          va.id,
+          va.username,
+          COALESCE(ak_count.assigned_keys, 0) as assigned_keys,
+          COALESCE(ak_types.existing_types, '') as existing_types,
+          CASE
+            WHEN COALESCE(ak_count.assigned_keys, 0) = 0 THEN 2
+            WHEN FIND_IN_SET(?, COALESCE(ak_types.existing_types, '')) > 0 THEN 1
+            ELSE 3
+          END as priority
+        FROM vpn_accounts va
+        LEFT JOIN (
+          SELECT account_id, COUNT(*) as assigned_keys
+          FROM account_keys
+          WHERE is_active = 1
+          GROUP BY account_id
+        ) ak_count ON va.id = ak_count.account_id
+        LEFT JOIN (
+          SELECT ak.account_id, GROUP_CONCAT(DISTINCT vk.key_type) as existing_types
+          FROM account_keys ak
+          INNER JOIN vpn_keys vk ON ak.key_id = vk.id
+          WHERE ak.is_active = 1
+          GROUP BY ak.account_id
+        ) ak_types ON va.id = ak_types.account_id
+        WHERE va.is_active = 1 
+        AND va.expires_at > NOW()
+        AND COALESCE(ak_count.assigned_keys, 0) < ?
+        ORDER BY priority ASC, assigned_keys ASC, va.created_at DESC
+        LIMIT 1
+      `;
+
+      const result = await executeQuery(targetQuery, [keyType, maxSlots]);
+      
+      if (result.success && result.data.length > 0) {
+        const account = result.data[0];
+        console.log(`🎯 Found target account: ${account.username} (${account.assigned_keys}/${maxSlots} slots, priority: ${account.priority})`);
+        return account;
+      } else {
+        console.log(`❌ No suitable target account found for ${keyType} (max slots: ${maxSlots})`);
+        return null;
+      }
+
+    } catch (error) {
+      console.error(`❌ Error finding target account for ${keyType}:`, error);
+      return null;
     }
   }
 
