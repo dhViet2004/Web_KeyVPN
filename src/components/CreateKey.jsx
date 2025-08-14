@@ -52,6 +52,7 @@ const CreateKey = () => {
   const [loadingAccounts, setLoadingAccounts] = useState(false)
   const [selectedAccountId, setSelectedAccountId] = useState(null)
   const [justAssignedKey, setJustAssignedKey] = useState(false) // Track if key was just assigned
+  const [showAllKeys, setShowAllKeys] = useState(false) // State để điều khiển hiển thị tất cả key
   const [tableKey, setTableKey] = useState(0) // Force table re-render
 
   // States for transfer key modal
@@ -1406,20 +1407,47 @@ const CreateKey = () => {
                 <Button icon={<FileTextOutlined />} onClick={handleExport} className="w-full md:w-auto">Xuất TXT</Button>
                 <Button icon={<DeleteOutlined />} danger onClick={showFilterModal} className="w-full md:w-auto">Xóa key</Button>
                 <Button icon={<ReloadOutlined />} onClick={handleRefresh} className="w-full md:w-auto">Làm mới</Button>
+                <Button 
+                  icon={showAllKeys ? <UnorderedListOutlined /> : <EyeOutlined />} 
+                  onClick={() => setShowAllKeys(!showAllKeys)}
+                  className="w-full md:w-auto"
+                  type={showAllKeys ? "primary" : "default"}
+                >
+                  {showAllKeys ? `Tất cả ${filteredKeys.length} key` : 'Hiển thị tất cả'}
+                </Button>
               </div>
               <Divider />
               <div className="flex flex-col md:flex-row gap-2 md:gap-4 mb-4 w-full">
                 <Input prefix={<SearchOutlined />} placeholder="Tìm kiếm key, FBX, THX, CTV, TEST, it..." className="w-full md:w-80" value={search} onChange={e => setSearch(e.target.value)} />
                 <Button onClick={handleSelectAll} className="w-full md:w-auto">{selectAll ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}</Button>
               </div>
+              
+              {/* Thông tin tổng số key */}
+              <div className="flex justify-between items-center mb-4 p-3 bg-gray-50 rounded-lg">
+                <div className="text-sm text-gray-600">
+                  <span className="font-semibold">Nhóm {g.label}:</span> Tổng có <span className="font-bold text-blue-600">{filteredKeys.length}</span> key
+                  {search && (
+                    <span> - Tìm kiếm: "{search}" ({filteredKeys.length} kết quả)</span>
+                  )}
+                </div>
+                <div className="text-sm text-gray-500">
+                  {showAllKeys ? 'Hiển thị tất cả key' : `Hiển thị theo trang (${Math.min(50, filteredKeys.length)} key/trang)`}
+                </div>
+              </div>
+              
               <div className="overflow-x-auto rounded-xl shadow-sm">
                 <Table
                   key={tableKey} // Force re-render when tableKey changes
                   columns={columns}
                   dataSource={filteredKeys}
                   rowKey="id"
-                  pagination={{ pageSize: 8 }}
-                  scroll={{ x: 1000 }}
+                  pagination={showAllKeys ? false : {
+                    showSizeChanger: false,
+                    showQuickJumper: false,
+                    showTotal: (total, range) => `${range[0]}-${range[1]} của ${total} key`,
+                    pageSize: 20
+                  }}
+                  scroll={{ x: 1000, y: showAllKeys ? 600 : undefined }}
                   bordered
                   size="middle"
                   style={{ borderRadius: 12, minWidth: 800 }}

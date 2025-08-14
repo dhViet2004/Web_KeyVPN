@@ -109,7 +109,7 @@ router.get('/:keyId/accounts', async (req, res) => {
 // @access  Private
 router.get('/:group', [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
-  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
+  query('limit').optional().isInt({ min: 1 }).withMessage('Limit must be a positive integer'),
   query('search').optional().trim(),
   query('status').optional().isIn(['chờ', 'đang hoạt động', 'hết hạn']).withMessage('Invalid status')
 ], async (req, res) => {
@@ -125,7 +125,7 @@ router.get('/:group', [
 
     const { group } = req.params;
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = parseInt(req.query.limit) || 999999; // Không giới hạn - lấy tất cả keys
     const search = req.query.search || '';
     const status = req.query.status || '';
     const offset = (page - 1) * limit;

@@ -11,6 +11,7 @@ export const useKeys = (group = 'FBX') => {
       setLoading(true);
       setError(null);
       
+      // Backend sẽ tự động lấy tất cả keys (không giới hạn)
       const response = await keysAPI.getKeys(targetGroup);
       if (response.success) {
         // Đảm bảo luôn setKeys là một mảng

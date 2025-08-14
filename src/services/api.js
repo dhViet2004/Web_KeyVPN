@@ -127,8 +127,8 @@ export const authAPI = {
 
 // Keys API
 export const keysAPI = {
-  // Get keys by group
-  getKeys: (group, params = {}) => apiClient.get(`/keys/${group}`, params),
+  // Get keys by group (no limit - get all keys)
+  getKeys: (group, params = {}) => apiClient.get(`/keys/${group}`, { params }),
 
   // Create new keys
   createKeys: (keyData) => apiClient.post('/keys/create', keyData),
