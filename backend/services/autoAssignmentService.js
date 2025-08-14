@@ -154,13 +154,10 @@ class AutoAssignmentService {
         console.log('✅ No accounts expiring soon with keys found (proactive)');
       } else {
         console.log(`📋 Found ${expiringSoonResult.data.length} accounts expiring soon:`);
-        expiringSoonResult.data.forEach(acc => {
-          console.log(`  - ${acc.username} (expiring in ${acc.minutes_remaining} minutes)`);
-        });
 
         // Process each expiring soon account
         for (const account of expiringSoonResult.data) {
-          console.log(`🚀 PROACTIVE: Transferring keys from ${account.username} (${account.minutes_remaining} minutes remaining)`);
+    // ...existing code...
           await this.transferAllKeysFromAccount(account);
         }
       }
@@ -199,13 +196,10 @@ class AutoAssignmentService {
         console.log('✅ No already expired accounts with keys found (reactive)');
       } else {
         console.log(`📋 Found ${alreadyExpiredResult.data.length} already expired accounts:`);
-        alreadyExpiredResult.data.forEach(acc => {
-          console.log(`  - ${acc.username} (expired ${acc.minutes_expired} minutes ago)`);
-        });
 
         // Process each already expired account
         for (const account of alreadyExpiredResult.data) {
-          console.log(`🔄 REACTIVE: Transferring keys from ${account.username} (expired ${account.minutes_expired} minutes ago)`);
+    // ...existing code...
           await this.transferAllKeysFromAccount(account);
         }
       }
@@ -265,7 +259,7 @@ class AutoAssignmentService {
         console.log('📋 Orphaned keys found (previously assigned to expired/deleted accounts):');
         orphanedResult.data.forEach(key => {
           console.log(`  - Key: ${key.code} (${key.key_type}) - ID: ${key.key_id}`);
-          console.log(`    Previous account: ${key.last_account_username || 'DELETED'} (expires: ${key.last_account_expires || 'N/A'})`);
+    // ...existing code...
         });
 
         // Process each orphaned key individually using SIMPLE approach
@@ -313,7 +307,7 @@ class AutoAssignmentService {
         const keyItem = keyQueue[i];
         const { keyId, keyType, sourceAccount } = keyItem;
         
-        console.log(`\n🔑 Processing key ${i + 1}/${keyQueue.length}: ${keyId} (${keyType}) from ${sourceAccount.username}`);
+  // ...existing code...
         
         // Tìm target account cho key này, loại trừ các account đã được sử dụng quá mức
         let targetAccount = null;
@@ -354,7 +348,7 @@ class AutoAssignmentService {
           
           if (bestAccount) {
             targetAccount = bestAccount;
-            console.log(`✅ Selected target account: ${targetAccount.username} (current: ${(targetAccount.assigned_keys || 0) + (usedTargetAccounts.get(targetAccount.id) || 0)}/${keyType === '1key' ? 1 : keyType === '2key' ? 2 : 3})`);
+            // ...existing code...
           } else {
             console.log(`⚠️ All suitable accounts are full, waiting 2 seconds before retry...`);
             await new Promise(resolve => setTimeout(resolve, 2000));
@@ -377,8 +371,7 @@ class AutoAssignmentService {
           const currentUsage = usedTargetAccounts.get(targetAccount.id) || 0;
           usedTargetAccounts.set(targetAccount.id, currentUsage + 1);
           
-          console.log(`✅ Successfully transferred key ${keyId} to ${targetAccount.username} (${i + 1}/${keyQueue.length})`);
-          console.log(`📊 Target account ${targetAccount.username} now has: ${(targetAccount.assigned_keys || 0) + usedTargetAccounts.get(targetAccount.id)}/${keyType === '1key' ? 1 : keyType === '2key' ? 2 : 3} keys`);
+    // ...existing code...
           
           // Track that this account has had keys transferred
           processedAccounts.add(sourceAccount.account_id);
@@ -406,11 +399,9 @@ class AutoAssignmentService {
         // Only mark for deletion if ALL keys from this account were transferred
         if (accountKeysTransferred.length === accountKeysInQueue.length && accountKeysTransferred.length > 0) {
           accountsToDelete.add(accountId);
-          const accountInfo = keyQueue.find(item => item.sourceAccount.account_id === accountId)?.sourceAccount;
-          console.log(`✅ All ${accountKeysInQueue.length}/${accountKeysInQueue.length} keys from ${accountInfo?.username} transferred - marked for cleanup`);
+    // ...existing code...
         } else {
-          const accountInfo = keyQueue.find(item => item.sourceAccount.account_id === accountId)?.sourceAccount;
-          console.log(`⚠️ Only ${accountKeysTransferred.length}/${accountKeysInQueue.length} keys from ${accountInfo?.username} transferred - keeping account`);
+    // ...existing code...
         }
       }
 
@@ -447,7 +438,7 @@ class AutoAssignmentService {
         for (const accountId of accountsToDelete) {
           const accountInfo = keyQueue.find(item => item.sourceAccount.account_id === accountId)?.sourceAccount;
           if (accountInfo) {
-            console.log(`🗑️ Deleting account ${accountInfo.username} - all keys successfully transferred`);
+            // ...existing code...
             await this.deleteExpiredAccountImmediate(accountInfo);
             await new Promise(resolve => setTimeout(resolve, 500)); // Delay between account deletions
           }
@@ -483,7 +474,7 @@ class AutoAssignmentService {
   // SIMPLE: Transfer all keys from an expiring account to new accounts  
   async transferAllKeysFromAccount(account) {
     try {
-      console.log(`🔄 Processing account: ${account.username}...`);
+  // ...existing code...
 
       // Get all keys assigned to this account
       const getKeysQuery = `
