@@ -207,7 +207,7 @@ const CreateKey = () => {
       const newKeys = response.data || []
       const fileName = `${activeGroup}${customDays || time}ngay.txt`
       const linkTemplate = settings.keyExport?.linkTemplate || 'link nhập key:'
-      const content = newKeys.map(k => `${k.code} | ${linkTemplate}`).join('\n')
+      const content = newKeys.map(k => `Key:${k.code} | ${linkTemplate}`).join('\n')
       const blob = new Blob([content], { type: 'text/plain' })
       const link = document.createElement('a')
       link.href = URL.createObjectURL(blob)
@@ -1267,7 +1267,7 @@ const CreateKey = () => {
     
     const fileName = `${activeGroup}${customDays || days}ngay.txt`
     const linkTemplate = settings.keyExport?.linkTemplate || 'link nhập key:'
-    const content = selectedKeys.map(k => `${k.code} | ${linkTemplate}`).join('\n')
+    const content = selectedKeys.map(k => `Key:${k.code} | ${linkTemplate}`).join('\n')
     const blob = new Blob([content], { type: 'text/plain' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)

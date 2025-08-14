@@ -1114,6 +1114,54 @@ function Settings() {
       )
     },
     {
+      key: 'keyExport',
+      label: (
+        <span>
+          <LinkOutlined />
+          Link Nhập Key
+        </span>
+      ),
+      children: (
+        <Card>
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Title level={4}>Cài Đặt Link Nhập Key</Title>
+            
+            <Form layout="vertical">
+              <Form.Item 
+                label="Template Link Nhập Key"
+                help="Template này sẽ được sử dụng khi xuất file key. Ví dụ: 'link nhập key:', 'Truy cập:', 'Link kích hoạt:'"
+              >
+                <Input
+                  value={settings.keyExport?.linkTemplate || 'link nhập key:'}
+                  onChange={(e) => updateSettings({
+                    keyExport: { 
+                      ...settings.keyExport, 
+                      linkTemplate: e.target.value 
+                    }
+                  })}
+                  placeholder="Nhập template link..."
+                  size="large"
+                  maxLength={200}
+                  showCount
+                />
+              </Form.Item>
+
+              <Divider />
+              
+              <Form.Item>
+                <div style={{ padding: 12, backgroundColor: '#f6f8fa', borderRadius: 6, border: '1px solid #e1e4e8' }}>
+                  <Text strong style={{ display: 'block', marginBottom: 8 }}>Preview:</Text>
+                  <Text code>
+                    Key:EXAMPLE_KEY_CODE | {settings.keyExport?.linkTemplate || 'link nhập key:'}
+                  </Text>
+                </div>
+              </Form.Item>
+            </Form>
+          </Space>
+        </Card>
+      )
+    },
+    {
       key: 'system',
       label: (
         <span>

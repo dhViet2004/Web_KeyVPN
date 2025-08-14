@@ -18,7 +18,7 @@ async function resetAdminPassword() {
     console.log('Current password hash:', admin.password);
     
     // Create new hash for admin123
-    const newPassword = 'admin123';
+    const newPassword = 'Caphesua@123';
     console.log('Creating new hash for password:', newPassword);
     
     const hashedPassword = await bcrypt.hash(newPassword, 12);
@@ -34,7 +34,7 @@ async function resetAdminPassword() {
       console.log('✅ Admin password updated successfully');
       console.log('📋 Login credentials:');
       console.log('   Username: admin');
-      console.log('   Password: admin123');
+      console.log('   Password: Caphesua@123');
       
       // Test the new hash
       const testResult = await bcrypt.compare(newPassword, hashedPassword);

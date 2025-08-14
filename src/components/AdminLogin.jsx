@@ -97,12 +97,7 @@ const AdminLogin = () => {
               </Button>
             </Form.Item>
           </Form>
-          
-          <div className="text-center mt-4 p-4 bg-blue-50 rounded-lg">
-            <p className="text-sm text-blue-700">
-              <strong>Lưu ý:</strong> Vui lòng đảm bảo server backend đang chạy trên port 5001
-            </p>
-          </div>
+          {/* Đã xóa thông báo lưu ý server backend */}
         </Card>
       </div>
     </div>

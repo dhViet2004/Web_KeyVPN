@@ -1,5 +1,5 @@
 const express = require('express');
-const { executeQuery, getConnection } = require('../config/database');
+const { executeQuery } = require('../config/database');
 const { authenticateToken } = require('./auth');
 
 const router = express.Router();
@@ -12,39 +12,29 @@ router.use(authenticateToken);
 // @access  Private
 router.get('/dashboard', async (req, res) => {
   try {
-    // Use stored procedure to get dashboard stats
-    const connection = await getConnection();
-
-    try {
-      const [_results] = await connection.execute(
-        'CALL GetDashboardStats(@total_keys, @active_keys, @expired_keys, @total_accounts, @active_accounts, @expired_accounts, @today_keys, @today_accounts)'
-      );
-
-      // Get the output parameters
-      const [output] = await connection.execute(`
-        SELECT 
-          @total_keys as total_keys,
-          @active_keys as active_keys,
-          @expired_keys as expired_keys,
-          @total_accounts as total_accounts,
-          @active_accounts as active_accounts,
-          @expired_accounts as expired_accounts,
-          @today_keys as today_keys_created,
-          @today_accounts as today_accounts_created
-      `);
-
-      connection.release();
-
-      res.json({
-        success: true,
-        data: output[0]
+    // Truy vấn tổng hợp trực tiếp thay vì gọi procedure
+    const statsQuery = `
+      SELECT
+        (SELECT COUNT(*) FROM vpn_keys) AS total_keys,
+        (SELECT COUNT(*) FROM vpn_keys WHERE status = 'đang hoạt động') AS active_keys,
+        (SELECT COUNT(*) FROM vpn_keys WHERE status = 'hết hạn') AS expired_keys,
+        (SELECT COUNT(*) FROM vpn_accounts) AS total_accounts,
+        (SELECT COUNT(*) FROM vpn_accounts WHERE is_active = 1) AS active_accounts,
+        (SELECT COUNT(*) FROM vpn_accounts WHERE is_active = 0) AS expired_accounts,
+        (SELECT COUNT(*) FROM vpn_keys WHERE DATE(created_at) = CURDATE()) AS today_keys_created,
+        (SELECT COUNT(*) FROM vpn_accounts WHERE DATE(created_at) = CURDATE()) AS today_accounts_created
+    `;
+    const result = await executeQuery(statsQuery);
+    if (!result.success || !result.data || !result.data.length) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to get dashboard stats'
       });
-
-    } catch (error) {
-      connection.release();
-      throw error;
     }
-
+    res.json({
+      success: true,
+      data: result.data[0]
+    });
   } catch (error) {
     console.error('Get dashboard stats error:', error);
     res.status(500).json({

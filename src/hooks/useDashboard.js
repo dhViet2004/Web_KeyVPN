@@ -1,14 +1,18 @@
 import { useState, useEffect } from 'react';
-import { keysAPI, accountsAPI } from '../services/api';
+import { statisticsAPI, keysAPI } from '../services/api';
 
 export const useDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState({
-    totalKeys: 0,
-    activeKeys: 0,
-    totalAccounts: 0,
-    pendingKeys: 0,
-    expiredKeys: 0
+    total_keys: 0,
+    active_keys: 0,
+    expired_keys: 0,
+    total_accounts: 0,
+    active_accounts: 0,
+    expired_accounts: 0,
+    today_keys_created: 0,
+    today_accounts_created: 0,
+    keysByGroup: []
   });
   const [error, setError] = useState(null);
 
@@ -17,19 +21,31 @@ export const useDashboard = () => {
       setLoading(true);
       setError(null);
 
-      // Gọi các API để lấy dữ liệu thống kê
-      const [keysStats, accountsStats] = await Promise.all([
-        keysAPI.getStats().catch(() => ({ data: { total: 0, active: 0, pending: 0, expired: 0 } })),
-        accountsAPI.getStats().catch(() => ({ data: { total: 0 } }))
+      // Gọi API dashboard statistics và keys by groups
+      const [dashboardStats, keysByGroup] = await Promise.all([
+        statisticsAPI.getDashboard().catch(err => {
+          console.warn('Dashboard API error:', err);
+          return { success: false, data: null };
+        }),
+        keysAPI.getStatsByGroups?.() || keysAPI.getStats?.() || Promise.resolve({ success: false, data: [] })
       ]);
 
-      setData({
-        totalKeys: keysStats.data?.total || 0,
-        activeKeys: keysStats.data?.active || 0,
-        pendingKeys: keysStats.data?.pending || 0,
-        expiredKeys: keysStats.data?.expired || 0,
-        totalAccounts: accountsStats.data?.total || 0
-      });
+      // Set dashboard data
+      if (dashboardStats.success && dashboardStats.data) {
+        setData(prevData => ({
+          ...prevData,
+          ...dashboardStats.data
+        }));
+      }
+
+      // Set keys by group data if available
+      if (keysByGroup.success && keysByGroup.data) {
+        setData(prevData => ({
+          ...prevData,
+          keysByGroup: Array.isArray(keysByGroup.data) ? keysByGroup.data : []
+        }));
+      }
+
     } catch (err) {
       console.error('Error fetching dashboard data:', err);
       setError(err.message || 'Không thể tải dữ liệu dashboard');
