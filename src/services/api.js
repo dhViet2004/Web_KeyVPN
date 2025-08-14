@@ -26,9 +26,6 @@ class ApiClient {
 
     if (this.token) {
       headers.Authorization = `Bearer ${this.token}`;
-      console.log('API Client - Token present:', this.token.substring(0, 10) + '...');
-    } else {
-      console.log('API Client - No token found in localStorage');
     }
 
     return headers;
@@ -233,6 +230,10 @@ export const settingsAPI = {
   // Update notification
   updateNotification: (notificationData) =>
     apiClient.put('/settings/notifications', notificationData),
+
+  // Update notification enabled status
+  updateNotificationEnabled: (enabled) =>
+    apiClient.put('/settings/notifications/enabled', { enabled }),
 
   // Disable all notifications
   disableNotifications: () => apiClient.put('/settings/notifications/disable'),

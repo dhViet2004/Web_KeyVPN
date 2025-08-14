@@ -78,7 +78,7 @@ const Account = () => {
   // Refresh accounts periodically
   useEffect(() => {
     const interval = setInterval(() => {
-      fetchAccounts({ timeFilter })
+      fetchAccounts({ timeFilter, limit: 0 }) // Set limit = 0 to fetch all accounts
     }, 30000) // Refresh every 30 seconds
     
     return () => clearInterval(interval)
@@ -86,7 +86,7 @@ const Account = () => {
 
   // Initial fetch on component mount
   useEffect(() => {
-    fetchAccounts({ timeFilter: 'all' });
+    fetchAccounts({ timeFilter: 'all', limit: 0 }); // Set limit = 0 to fetch all accounts
   }, [fetchAccounts])
 
   // Keyboard shortcut cho tìm kiếm (Ctrl/Cmd + K)
@@ -184,7 +184,7 @@ const Account = () => {
   // Fetch accounts when time filter changes (for backend-supported filters)
   useEffect(() => {
     if (['all', 'expired', '1hour', '6hours', '12hours', '1day', '3days', '7days', '30days'].includes(timeFilter)) {
-      fetchAccounts({ timeFilter })
+      fetchAccounts({ timeFilter, limit: 0 }) // Set limit = 0 to fetch all accounts
     }
   }, [timeFilter, fetchAccounts])
 
@@ -359,7 +359,7 @@ const Account = () => {
       setAccounts(accs => accs.map(a => ({ ...a, selected: false })))
       
       // Refresh account list
-      fetchAccounts({ timeFilter })
+      fetchAccounts({ timeFilter, limit: 0 }) // Set limit = 0 to fetch all accounts
       
       // Show appropriate message
       if (errorCount === 0) {
@@ -382,7 +382,7 @@ const Account = () => {
       await deleteAccount(id)
       
       // Refresh account list after successful deletion
-      fetchAccounts({ timeFilter })
+      fetchAccounts({ timeFilter, limit: 0 }) // Set limit = 0 to fetch all accounts
       
       messageApi.success('Đã xóa tài khoản thành công!')
     } catch (error) {
@@ -534,7 +534,7 @@ const Account = () => {
       setAccountKeys(keys)
       
       // Refresh account list to update assigned_keys count with dynamic max slots
-      fetchAccounts({ timeFilter })
+      fetchAccounts({ timeFilter, limit: 0 }) // Set limit = 0 to fetch all accounts
       
       // Update selectedAccount to reflect new assigned_keys count and max slots
       let maxSlots = 3; // Default
@@ -591,7 +591,7 @@ const Account = () => {
       setAccountKeys(keys)
       
       // Refresh account list to update assigned_keys count with dynamic max slots
-      fetchAccounts({ timeFilter })
+      fetchAccounts({ timeFilter, limit: 0 }) // Set limit = 0 to fetch all accounts
       
       // Update selectedAccount to reflect new assigned_keys count
       let maxSlots = 3; // Default max slots khi không có key
@@ -702,7 +702,7 @@ const Account = () => {
           icon={<ReloadOutlined />} 
           size="small" 
           onClick={() => {
-            fetchAccounts({ timeFilter });
+            fetchAccounts({ timeFilter, limit: 0 }); // Set limit = 0 to fetch all accounts
           }}
           loading={accountsLoading}
           title="Tải lại danh sách"
@@ -733,7 +733,7 @@ const Account = () => {
             <Button 
               size="small" 
               danger 
-              onClick={() => fetchAccounts({ timeFilter })}
+              onClick={() => fetchAccounts({ timeFilter, limit: 0 })} // Set limit = 0 to fetch all accounts
             >
               Thử lại
             </Button>
@@ -793,7 +793,7 @@ const Account = () => {
                 setSearchText('')
                 setCustomTimeRange({ start: null, end: null })
                 setFlexibleTime({ days: 0, hours: 0, minutes: 0, seconds: 0 })
-                fetchAccounts({ timeFilter: 'all' })
+                fetchAccounts({ timeFilter: 'all', limit: 0 }) // Set limit = 0 to fetch all accounts
               }}
               title="Reset tất cả bộ lọc và tìm kiếm"
             >

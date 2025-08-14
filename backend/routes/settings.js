@@ -168,6 +168,18 @@ router.get('/notifications', async (req, res) => {
   try {
     const targetAudience = req.user ? 'admins' : 'users';
 
+    // Get notification enabled status from system_settings
+    const enabledQuery = `
+      SELECT setting_value 
+      FROM system_settings 
+      WHERE setting_key = 'notification_enabled'
+    `;
+    
+    const enabledResult = await executeQuery(enabledQuery);
+    const notificationEnabled = enabledResult.success && enabledResult.data.length > 0 
+      ? enabledResult.data[0].setting_value === 'true' 
+      : true; // default to true
+
     const query = `
       SELECT 
         id,
@@ -197,13 +209,77 @@ router.get('/notifications', async (req, res) => {
       });
     }
 
+    const notification = result.data[0];
+    
     res.json({
       success: true,
-      data: result.data[0] || null
+      data: notification ? {
+        ...notification,
+        enabled: notificationEnabled
+      } : {
+        enabled: notificationEnabled,
+        title: 'THÔNG BÁO HỆ THỐNG',
+        content: 'Chào mừng bạn đến với KeyVPN Tool!',
+        position: 'before',
+        display_count: 1,
+        has_link: false,
+        link_url: '',
+        link_text: 'Xem thêm'
+      }
     });
 
   } catch (error) {
     console.error('Get notifications error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   PUT /api/settings/notifications/enabled
+// @desc    Update notification enabled status
+// @access  Private
+router.put('/notifications/enabled', [
+  body('enabled').isBoolean().withMessage('Enabled must be boolean')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { enabled } = req.body;
+
+    const upsertQuery = `
+      INSERT INTO system_settings (setting_key, setting_value, setting_type, updated_by) 
+      VALUES ('notification_enabled', ?, 'boolean', ?)
+      ON DUPLICATE KEY UPDATE 
+      setting_value = VALUES(setting_value),
+      updated_by = VALUES(updated_by),
+      updated_at = CURRENT_TIMESTAMP
+    `;
+
+    const result = await executeQuery(upsertQuery, [enabled.toString(), req.user?.id || 1]);
+
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update notification enabled status'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Notification enabled status updated successfully'
+    });
+
+  } catch (error) {
+    console.error('Update notification enabled error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error'
@@ -446,6 +522,12 @@ router.put('/auto-assignment', [
 
     const { enabled, beforeExpiry, checkInterval, deleteExpiredAccounts } = req.body;
     console.log('Update auto assignment request body:', { enabled, beforeExpiry, checkInterval, deleteExpiredAccounts });
+    console.log('Request body type checks:', {
+      enabled: typeof enabled,
+      beforeExpiry: typeof beforeExpiry,
+      checkInterval: typeof checkInterval,
+      deleteExpiredAccounts: typeof deleteExpiredAccounts
+    });
 
     // Get current settings first
     const currentQuery = `
@@ -490,6 +572,8 @@ router.put('/auto-assignment', [
       deleteExpiredAccounts: deleteExpiredAccounts !== undefined ? deleteExpiredAccounts : currentSettings.deleteExpiredAccounts
     };
 
+    console.log('Final settings to save:', finalSettings);
+
     // Update or insert settings
     const settings = [
       { key: 'auto_assignment_enabled', value: finalSettings.enabled.toString(), type: 'boolean' },
@@ -513,7 +597,7 @@ router.put('/auto-assignment', [
         setting.key,
         setting.value,
         setting.type,
-        req.user.id
+        req.user?.id || 1
       ]);
 
       if (!result.success) {

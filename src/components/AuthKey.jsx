@@ -28,19 +28,26 @@ const AuthKey = () => {
   const [assigningKey, setAssigningKey] = useState(false) // Trạng thái đang gán key
   const [assignmentMessage, setAssignmentMessage] = useState('') // Thông báo về việc gán key
   const [lastCheckedKey, setLastCheckedKey] = useState('') // Key đã kiểm tra lần trước
-  const { settings } = useSettings()
+  const { shouldShowNotification } = useSettings()
 
   // Hiển thị notification mỗi khi load trang
   useEffect(() => {
     const timer = setTimeout(() => {
-      // Luôn hiển thị notification nếu được bật trong settings
-      if (settings?.notification?.enabled) {
-        setShowNotification(true)
+      if (shouldShowNotification) {
+        const shouldShow = shouldShowNotification();
+        
+        if (shouldShow) {
+          setShowNotification(true);
+        } else {
+          setShowNotification(false);
+        }
+      } else {
+        setShowNotification(false);
       }
-    }, 1000) // Delay để đảm bảo settings được load
+    }, 2000) // Delay để đảm bảo database được load hoàn toàn
     
     return () => clearTimeout(timer)
-  }, [settings]) // Dependency là settings object
+  }, [shouldShowNotification])
 
   // Xác thực key với API
   // Hàm tự động gán key vào tài khoản VPN có sẵn
@@ -348,7 +355,10 @@ const AuthKey = () => {
       {/* Notification Modal */}
       <NotificationModal 
         show={showNotification} 
-        onClose={() => setShowNotification(false)}
+        onClose={() => {
+          setShowNotification(false)
+          // Removed markNotificationShown to allow notification to show again
+        }}
         position="before" 
       />
     </div>

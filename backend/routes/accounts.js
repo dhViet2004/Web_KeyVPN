@@ -46,7 +46,7 @@ router.use(authenticateToken);
 // @access  Private
 router.get('/', [
   query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
-  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
+  query('limit').optional().isInt({ min: 0, max: 1000 }).withMessage('Limit must be between 0 and 1000 (0 means no limit)'),
   query('search').optional().trim(),
   query('timeFilter').optional().isIn(['all', 'expired', '1hour', '6hours', '12hours', '1day', '3days', '7days', '30days']).withMessage('Invalid time filter')
 ], async (req, res) => {
@@ -61,10 +61,10 @@ router.get('/', [
     }
 
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = parseInt(req.query.limit) || 0; // 0 means no limit
     const search = req.query.search || '';
     const timeFilter = req.query.timeFilter || 'all';
-    const offset = (page - 1) * limit;
+    const offset = (page - 1) * (limit || 20); // Use 20 as default for offset calculation when limit is provided
 
     // Build time filter condition
     let timeCondition = '';
@@ -190,7 +190,7 @@ router.get('/', [
       ${searchCondition}
       ${timeCondition}
       ORDER BY va.expires_at ASC
-      LIMIT ${offset}, ${limit}
+      ${limit > 0 ? `LIMIT ${offset}, ${limit}` : ''}
     `;
     // KHÔNG push offset, limit vào queryParams nữa!
 
@@ -239,7 +239,7 @@ router.get('/', [
     }
 
     const total = countResult.data[0].total;
-    const totalPages = Math.ceil(total / limit);
+    const totalPages = limit > 0 ? Math.ceil(total / limit) : 1;
 
     res.json({
       success: true,
@@ -249,8 +249,8 @@ router.get('/', [
           current_page: page,
           total_pages: totalPages,
           total_items: total,
-          per_page: limit,
-          has_next: page < totalPages,
+          per_page: limit || total, // Show actual limit or total items
+          has_next: limit > 0 ? page < totalPages : false,
           has_prev: page > 1
         }
       }

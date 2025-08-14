@@ -25,7 +25,9 @@ class AutoAssignmentService {
         return;
       }
 
-      console.log(`🤖 Auto assignment service started - Check every ${settings.checkInterval} minutes, transfer keys within ${settings.beforeExpiry} minutes of expiry if new accounts available`);
+      console.log(`🤖 Auto assignment service started - Check every ${settings.checkInterval} minutes`);
+      console.log(`🕐 PROACTIVE: Transfer keys when accounts have ≤ ${settings.beforeExpiry} minutes remaining (before expiry)`);
+      console.log(`🔄 REACTIVE: Also transfer keys from already expired accounts if found`);
       
       this.isRunning = true;
 
@@ -103,14 +105,18 @@ class AutoAssignmentService {
   // IMPORTANT: Only process keys that are ALREADY ASSIGNED to accounts, not keys in 'chờ' status waiting for user activation
   async processExpiredAccounts(settings) {
     try {
-      console.log('🔍 Checking for accounts expiring soon and available new accounts...');
-      console.log(`🕐 Looking for accounts expiring within ${settings.beforeExpiry} minutes`);
+      console.log('🔍 Checking for accounts expiring soon and already expired accounts...');
+      console.log(`🕐 PROACTIVE: Transfer keys from accounts with ≤ ${settings.beforeExpiry} minutes remaining`);
+      console.log(`🔄 REACTIVE: Transfer keys from accounts already expired`);
       console.log('ℹ️ POLICY: Only processing keys already assigned to accounts, NOT keys in "chờ" status waiting for user activation');
 
-      // STEP 1: Process keys from expiring/expired accounts (keys that are CURRENTLY assigned)
-      await this.processKeysFromExpiredAccounts(settings);
+      // STEP 1: Process keys from accounts expiring soon (proactive transfer)
+      await this.processKeysFromExpiringSoonAccounts(settings);
       
-      // STEP 2: Process orphaned keys (keys that were PREVIOUSLY assigned but account was deleted)
+      // STEP 2: Process keys from already expired accounts (reactive transfer)
+      await this.processKeysFromAlreadyExpiredAccounts();
+      
+      // STEP 3: Process orphaned keys (keys that were PREVIOUSLY assigned but account was deleted)
       await this.processOrphanedKeys();
 
     } catch (error) {
@@ -118,15 +124,14 @@ class AutoAssignmentService {
     }
   }
 
-  // Process keys from expiring/expired accounts
-  // SIMPLE APPROACH: Just update account_keys table directly
-  async processKeysFromExpiredAccounts(settings) {
+  // Process keys from accounts expiring soon (proactive transfer)
+  async processKeysFromExpiringSoonAccounts(settings) {
     try {
-      console.log('🔍 Step 1: Checking keys from expiring/expired accounts...');
-      console.log('ℹ️ SIMPLE APPROACH: Find expiring accounts → Get their keys → Transfer to new accounts');
+      console.log('🔍 Step 1A: Checking keys from accounts expiring soon (proactive transfer)...');
+      console.log(`ℹ️ PROACTIVE: Transfer keys BEFORE accounts expire (within ${settings.beforeExpiry} minutes)`);
 
-      // Find accounts that are expiring/expired and have keys
-      const expiringAccountsQuery = `
+      // Find accounts that are expiring soon (within beforeExpiry minutes) and have keys
+      const expiringSoonAccountsQuery = `
         SELECT 
           va.id as account_id, 
           va.username, 
@@ -136,35 +141,77 @@ class AutoAssignmentService {
         INNER JOIN account_keys ak ON va.id = ak.account_id
         WHERE va.expires_at IS NOT NULL
         AND ak.is_active = 1
-        AND (
-          TIMESTAMPDIFF(MINUTE, NOW(), va.expires_at) <= ?
-          OR va.expires_at <= NOW()
-        )
+        AND TIMESTAMPDIFF(MINUTE, NOW(), va.expires_at) <= ?
+        AND TIMESTAMPDIFF(MINUTE, NOW(), va.expires_at) > 0
         GROUP BY va.id, va.username, va.expires_at
         ORDER BY va.expires_at ASC
       `;
 
       console.log(`🔍 Finding accounts expiring within ${settings.beforeExpiry} minutes...`);
-      const expiringResult = await executeQuery(expiringAccountsQuery, [settings.beforeExpiry]);
+      const expiringSoonResult = await executeQuery(expiringSoonAccountsQuery, [settings.beforeExpiry]);
 
-      if (!expiringResult.success || expiringResult.data.length === 0) {
-        console.log('✅ No expired/expiring accounts with keys found');
-        return;
-      }
+      if (!expiringSoonResult.success || expiringSoonResult.data.length === 0) {
+        console.log('✅ No accounts expiring soon with keys found (proactive)');
+      } else {
+        console.log(`📋 Found ${expiringSoonResult.data.length} accounts expiring soon:`);
+        expiringSoonResult.data.forEach(acc => {
+          console.log(`  - ${acc.username} (expiring in ${acc.minutes_remaining} minutes)`);
+        });
 
-      console.log(`📋 Found ${expiringResult.data.length} expiring accounts:`);
-      expiringResult.data.forEach(acc => {
-        const expiryStatus = acc.minutes_remaining <= 0 ? 'EXPIRED' : `expiring in ${acc.minutes_remaining}min`;
-        console.log(`  - ${acc.username} (${expiryStatus})`);
-      });
-
-      // Process each expiring account
-      for (const account of expiringResult.data) {
-        await this.transferAllKeysFromAccount(account);
+        // Process each expiring soon account
+        for (const account of expiringSoonResult.data) {
+          console.log(`🚀 PROACTIVE: Transferring keys from ${account.username} (${account.minutes_remaining} minutes remaining)`);
+          await this.transferAllKeysFromAccount(account);
+        }
       }
 
     } catch (error) {
-      console.error('Error processing keys from expired accounts:', error);
+      console.error('Error processing keys from expiring soon accounts:', error);
+    }
+  }
+
+  // Process keys from already expired accounts (reactive transfer)
+  async processKeysFromAlreadyExpiredAccounts() {
+    try {
+      console.log('🔍 Step 1B: Checking keys from already expired accounts (reactive transfer)...');
+      console.log('ℹ️ REACTIVE: Transfer keys from accounts that have already expired');
+
+      // Find accounts that are already expired and have keys
+      const alreadyExpiredAccountsQuery = `
+        SELECT 
+          va.id as account_id, 
+          va.username, 
+          va.expires_at,
+          TIMESTAMPDIFF(MINUTE, va.expires_at, NOW()) as minutes_expired
+        FROM vpn_accounts va
+        INNER JOIN account_keys ak ON va.id = ak.account_id
+        WHERE va.expires_at IS NOT NULL
+        AND ak.is_active = 1
+        AND va.expires_at <= NOW()
+        GROUP BY va.id, va.username, va.expires_at
+        ORDER BY va.expires_at ASC
+      `;
+
+      console.log('🔍 Finding already expired accounts with keys...');
+      const alreadyExpiredResult = await executeQuery(alreadyExpiredAccountsQuery);
+
+      if (!alreadyExpiredResult.success || alreadyExpiredResult.data.length === 0) {
+        console.log('✅ No already expired accounts with keys found (reactive)');
+      } else {
+        console.log(`📋 Found ${alreadyExpiredResult.data.length} already expired accounts:`);
+        alreadyExpiredResult.data.forEach(acc => {
+          console.log(`  - ${acc.username} (expired ${acc.minutes_expired} minutes ago)`);
+        });
+
+        // Process each already expired account
+        for (const account of alreadyExpiredResult.data) {
+          console.log(`🔄 REACTIVE: Transferring keys from ${account.username} (expired ${account.minutes_expired} minutes ago)`);
+          await this.transferAllKeysFromAccount(account);
+        }
+      }
+
+    } catch (error) {
+      console.error('Error processing keys from already expired accounts:', error);
     }
   }
 
@@ -1029,10 +1076,10 @@ class AutoAssignmentService {
   }
 
   // Delete expired account immediately after key transfer (prevents memory bloat)
-  // Delete expired account immediately after key transfer (prevents memory bloat)
   async deleteExpiredAccountImmediate(expiredAccount) {
     try {
-      console.log(`🗑️ Deleting expired account ${expiredAccount.username}...`);
+      const reason = expiredAccount.cleanup_reason || 'EXPIRED';
+      console.log(`🗑️ Deleting ${reason} account ${expiredAccount.username}...`);
 
       // First, DELETE any remaining account_keys records for this account
       const deleteKeysQuery = `
@@ -1053,7 +1100,17 @@ class AutoAssignmentService {
       const historyResult = await executeQuery(historyCheckQuery, [expiredAccount.account_id]);
       
       if (historyResult.success && historyResult.data[0].history_count > 0) {
-        console.log(`📚 Account ${expiredAccount.username} has ${historyResult.data[0].history_count} history records - setting inactive instead of deleting`);
+        console.log(`📚 ${reason} account ${expiredAccount.username} has ${historyResult.data[0].history_count} history records - setting inactive instead of deleting`);
+        
+        // If the account is already inactive (is_active = 0), no need to update again
+        if (reason === 'INACTIVE') {
+          console.log(`✅ ${reason} account ${expiredAccount.username} is already inactive with history records - no action needed`);
+          return {
+            success: true,
+            action: 'already_inactive',
+            message: `${reason} account ${expiredAccount.username} is already inactive`
+          };
+        }
         
         // Set account as inactive to preserve foreign key relationships
         const inactivateQuery = `
@@ -1065,18 +1122,18 @@ class AutoAssignmentService {
         const inactivateResult = await executeQuery(inactivateQuery, [expiredAccount.account_id]);
         
         if (inactivateResult.success && inactivateResult.affectedRows > 0) {
-          console.log(`✅ Successfully set account ${expiredAccount.username} as inactive (preserving history)`);
+          console.log(`✅ Successfully set ${reason} account ${expiredAccount.username} as inactive (preserving history)`);
           return {
             success: true,
             action: 'inactivated',
-            message: `Account ${expiredAccount.username} set as inactive`
+            message: `${reason} account ${expiredAccount.username} set as inactive`
           };
         } else {
-          throw new Error(`Failed to inactivate account: ${inactivateResult.error}`);
+          throw new Error(`Failed to inactivate ${reason} account: ${inactivateResult.error || 'Unknown error'}`);
         }
       } else {
         // Safe to delete completely if no history records
-        console.log(`🗑️ Account ${expiredAccount.username} has no history records - deleting completely`);
+        console.log(`🗑️ ${reason} account ${expiredAccount.username} has no history records - deleting completely`);
         
         const deleteAccountQuery = `
           DELETE FROM vpn_accounts 
@@ -1086,26 +1143,27 @@ class AutoAssignmentService {
         const deleteResult = await executeQuery(deleteAccountQuery, [expiredAccount.account_id]);
 
         if (deleteResult.success && deleteResult.affectedRows > 0) {
-          console.log(`🗑️ ✅ Successfully deleted account ${expiredAccount.username} completely`);
+          console.log(`🗑️ ✅ Successfully deleted ${reason} account ${expiredAccount.username} completely`);
           return {
             success: true,
             action: 'deleted',
-            message: `Account ${expiredAccount.username} deleted completely`
+            message: `${reason} account ${expiredAccount.username} deleted completely`
           };
         } else {
-          throw new Error(`Failed to delete account: ${deleteResult.error}`);
+          throw new Error(`Failed to delete ${reason} account: ${deleteResult.error || 'Unknown error'}`);
         }
       }
 
     } catch (error) {
-      console.error(`❌ Failed to delete account ${expiredAccount.username}: ${error.message}`);
+      const reason = expiredAccount.cleanup_reason || 'EXPIRED';
+      console.error(`❌ Failed to delete ${reason} account ${expiredAccount.username}: ${error.message}`);
       
       // Fallback: at least try to set as inactive
       try {
         const fallbackQuery = `UPDATE vpn_accounts SET is_active = 0 WHERE id = ?`;
         const fallbackResult = await executeQuery(fallbackQuery, [expiredAccount.account_id]);
         if (fallbackResult.success) {
-          console.log(`⚠️ Fallback: Set ${expiredAccount.username} as inactive`);
+          console.log(`⚠️ Fallback: Set ${reason} ${expiredAccount.username} as inactive`);
           return {
             success: false,
             action: 'fallback_inactive',
@@ -1182,7 +1240,7 @@ class AutoAssignmentService {
         return;
       }
 
-      console.log('🧹 Starting cleanup of expired accounts without keys...');
+      console.log('🧹 Starting cleanup of expired accounts...');
 
       // FIRST: Clean up orphaned account_keys records (is_active = 0)
       console.log('🧽 Cleaning up orphaned account_keys records...');
@@ -1198,11 +1256,17 @@ class AutoAssignmentService {
         console.error('❌ Failed to cleanup orphaned records:', cleanupResult.error);
       }
 
-      // Find expired accounts that don't have any active keys (prioritize older expired accounts)
+      // Find expired accounts (both expired by time AND is_active = 0)
+      // Priority: accounts that are inactive (is_active = 0) AND have no active keys
       const expiredAccountsQuery = `
-        SELECT va.id, va.username, va.expires_at, 
+        SELECT va.id, va.username, va.expires_at, va.is_active,
                TIMESTAMPDIFF(MINUTE, va.expires_at, NOW()) as minutes_expired,
-               COALESCE(ak_count.key_count, 0) as active_keys
+               COALESCE(ak_count.key_count, 0) as active_keys,
+               CASE 
+                 WHEN va.is_active = 0 THEN 'inactive'
+                 WHEN va.expires_at <= NOW() THEN 'expired'
+                 ELSE 'active'
+               END as cleanup_reason
         FROM vpn_accounts va
         LEFT JOIN (
           SELECT account_id, COUNT(*) as key_count
@@ -1210,13 +1274,21 @@ class AutoAssignmentService {
           WHERE is_active = 1
           GROUP BY account_id
         ) ak_count ON va.id = ak_count.account_id
-        WHERE va.expires_at <= NOW()
+        WHERE (
+          -- Priority 1: Inactive accounts (is_active = 0) regardless of expiry time
+          va.is_active = 0
+          OR 
+          -- Priority 2: Accounts expired by time
+          va.expires_at <= NOW()
+        )
         AND (ak_count.key_count IS NULL OR ak_count.key_count = 0)
-        ORDER BY va.expires_at ASC
-        LIMIT 50
+        ORDER BY 
+          va.is_active ASC,  -- Process inactive accounts first (0 comes before 1)
+          va.expires_at ASC  -- Then by expiry time
+        LIMIT 100
       `;
 
-      console.log('🔍 Executing cleanup query for expired accounts without keys...');
+      console.log('🔍 Executing cleanup query for expired/inactive accounts without keys...');
       const expiredResult = await executeQuery(expiredAccountsQuery);
 
       console.log(`📊 Cleanup query result:`, {
@@ -1231,50 +1303,77 @@ class AutoAssignmentService {
       }
 
       if (expiredResult.data.length === 0) {
-        console.log('✅ No expired accounts without keys found to cleanup');
+        console.log('✅ No expired/inactive accounts without keys found to cleanup');
         return;
       }
 
-      console.log(`🗑️ Found ${expiredResult.data.length} expired accounts without keys:`);
-      expiredResult.data.forEach(acc => {
-        console.log(`  - Account: ${acc.username}, expired: ${acc.expires_at} (${acc.minutes_expired} minutes ago)`);
-      });
+      // Group accounts by cleanup reason for better logging
+      const inactiveAccounts = expiredResult.data.filter(acc => acc.is_active === 0);
+      const expiredAccounts = expiredResult.data.filter(acc => acc.is_active === 1 && acc.cleanup_reason === 'expired');
+
+      console.log(`🗑️ Found accounts to cleanup:`);
+      console.log(`   - Inactive accounts (is_active = 0): ${inactiveAccounts.length}`);
+      console.log(`   - Expired accounts (past expiry time): ${expiredAccounts.length}`);
+      console.log(`   - Total: ${expiredResult.data.length}`);
+
+      // Log details of accounts to be deleted
+      if (inactiveAccounts.length > 0) {
+        console.log(`📋 Inactive accounts (is_active = 0):`);
+        inactiveAccounts.forEach(acc => {
+          const timeStatus = acc.expires_at <= new Date() ? 
+            `expired ${Math.abs(acc.minutes_expired)} minutes ago` : 
+            `expires in ${Math.abs(acc.minutes_expired)} minutes`;
+          console.log(`  - ${acc.username} (${timeStatus})`);
+        });
+      }
+
+      if (expiredAccounts.length > 0) {
+        console.log(`📋 Time-expired accounts (is_active = 1 but past expiry):`);
+        expiredAccounts.forEach(acc => {
+          console.log(`  - ${acc.username} (expired ${acc.minutes_expired} minutes ago)`);
+        });
+      }
 
       let deletedCount = 0;
       let inactivatedCount = 0;
       let errorCount = 0;
 
       // Process accounts in batches to avoid overwhelming the database
-      const batchSize = 10;
+      const batchSize = 20; // Increased batch size for faster cleanup
       for (let i = 0; i < expiredResult.data.length; i += batchSize) {
         const batch = expiredResult.data.slice(i, i + batchSize);
-        console.log(`🔄 Processing batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(expiredResult.data.length/batchSize)} (${batch.length} accounts)...`);
+        console.log(`🔄 Processing cleanup batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(expiredResult.data.length/batchSize)} (${batch.length} accounts)...`);
         
         for (const account of batch) {
           try {
-            console.log(`🗑️ Processing expired account: ${account.username}...`);
+            const reason = account.is_active === 0 ? 'INACTIVE' : 'EXPIRED';
+            console.log(`🗑️ Processing ${reason} account: ${account.username}...`);
             
             // Use immediate deletion method
             const result = await this.deleteExpiredAccountImmediate({
               account_id: account.id,
-              username: account.username
+              username: account.username,
+              cleanup_reason: reason
             });
             
             if (result.success) {
               if (result.action === 'deleted') {
                 deletedCount++;
-                console.log(`✅ Deleted: ${account.username}`);
+                console.log(`✅ Deleted ${reason}: ${account.username}`);
+              } else if (result.action === 'already_inactive') {
+                inactivatedCount++;
+                console.log(`✅ Already handled ${reason}: ${account.username}`);
               } else {
                 inactivatedCount++;
-                console.log(`✅ Inactivated: ${account.username}`);
+                console.log(`✅ Inactivated ${reason}: ${account.username}`);
               }
             } else {
               errorCount++;
-              console.log(`❌ Error processing: ${account.username} - ${result.error}`);
+              console.log(`❌ Error processing ${reason}: ${account.username} - ${result.error}`);
             }
             
             // Small delay between accounts to avoid overwhelming database
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise(resolve => setTimeout(resolve, 50));
             
           } catch (error) {
             errorCount++;
@@ -1285,7 +1384,7 @@ class AutoAssignmentService {
         // Longer delay between batches
         if (i + batchSize < expiredResult.data.length) {
           console.log('⏳ Waiting before next batch...');
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
       }
 
@@ -1294,6 +1393,14 @@ class AutoAssignmentService {
       console.log(`   - Inactivated: ${inactivatedCount} accounts`);
       console.log(`   - Errors: ${errorCount} accounts`);
       console.log(`   - Total processed: ${deletedCount + inactivatedCount + errorCount}/${expiredResult.data.length}`);
+
+      // Summary by type
+      const processedInactive = Math.min(inactiveAccounts.length, deletedCount + inactivatedCount);
+      const processedExpired = (deletedCount + inactivatedCount) - processedInactive;
+      
+      console.log(`📊 Cleanup summary by type:`);
+      console.log(`   - Inactive accounts (is_active=0) processed: ${processedInactive}/${inactiveAccounts.length}`);
+      console.log(`   - Expired accounts processed: ${processedExpired}/${expiredAccounts.length}`);
 
     } catch (error) {
       console.error('❌ Error during expired accounts cleanup:', error);
@@ -1304,7 +1411,7 @@ class AutoAssignmentService {
   getStatus() {
     return {
       isRunning: this.isRunning,
-      intervalId: this.intervalId
+      hasInterval: !!this.intervalId
     };
   }
 
@@ -1358,6 +1465,134 @@ class AutoAssignmentService {
       const settings = await this.getSettings();
       console.log('Current settings:', settings);
       
+      // Force enable cleanup for this run
+      settings.deleteExpiredAccounts = true;
+      
+      await this.cleanupExpiredAccounts(settings);
+      console.log('✅ Force cleanup completed');
+      
+      return {
+        success: true,
+        message: 'Force cleanup completed'
+      };
+    } catch (error) {
+      console.error('❌ Force cleanup failed:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  // Quick cleanup for inactive accounts only (fast operation)
+  async quickCleanupInactiveAccounts() {
+    try {
+      console.log('🧽 Quick cleanup of inactive accounts (is_active = 0) requested...');
+      
+      // Find inactive accounts without keys
+      const inactiveAccountsQuery = `
+        SELECT va.id, va.username, va.expires_at, va.is_active
+        FROM vpn_accounts va
+        LEFT JOIN (
+          SELECT account_id, COUNT(*) as key_count
+          FROM account_keys
+          WHERE is_active = 1
+          GROUP BY account_id
+        ) ak_count ON va.id = ak_count.account_id
+        WHERE va.is_active = 0
+        AND (ak_count.key_count IS NULL OR ak_count.key_count = 0)
+        ORDER BY va.expires_at ASC
+        LIMIT 50
+      `;
+
+      console.log('🔍 Finding inactive accounts...');
+      const inactiveResult = await executeQuery(inactiveAccountsQuery);
+
+      if (!inactiveResult.success || inactiveResult.data.length === 0) {
+        console.log('✅ No inactive accounts found to cleanup');
+        return {
+          success: true,
+          message: 'No inactive accounts found',
+          processed: 0
+        };
+      }
+
+      console.log(`🗑️ Found ${inactiveResult.data.length} inactive accounts to cleanup:`);
+      inactiveResult.data.forEach(acc => {
+        console.log(`  - ${acc.username} (is_active = 0)`);
+      });
+
+      let deletedCount = 0;
+      let errorCount = 0;
+
+      for (const account of inactiveResult.data) {
+        try {
+          const result = await this.deleteExpiredAccountImmediate({
+            account_id: account.id,
+            username: account.username,
+            cleanup_reason: 'INACTIVE'
+          });
+          
+          if (result.success) {
+            deletedCount++;
+            console.log(`✅ Processed inactive account: ${account.username}`);
+          } else {
+            errorCount++;
+            console.log(`❌ Error processing: ${account.username} - ${result.error}`);
+          }
+          
+          // Small delay
+          await new Promise(resolve => setTimeout(resolve, 100));
+          
+        } catch (error) {
+          errorCount++;
+          console.error(`❌ Error processing account ${account.username}:`, error.message);
+        }
+      }
+
+      console.log(`✅ Quick cleanup completed:`);
+      console.log(`   - Processed: ${deletedCount} accounts`);
+      console.log(`   - Errors: ${errorCount} accounts`);
+
+      return {
+        success: true,
+        message: 'Quick cleanup completed',
+        processed: deletedCount,
+        errors: errorCount,
+        total: inactiveResult.data.length
+      };
+
+    } catch (error) {
+      console.error('❌ Quick cleanup failed:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  // Force cleanup expired accounts immediately (for manual testing)
+  async forceCleanupNow_OLD() {
+    try {
+      console.log('🧽 Force cleanup requested...');
+      
+      // First cleanup orphaned records
+      console.log('🧽 Cleaning up orphaned account_keys records...');
+      const cleanupOrphanedQuery = `
+        DELETE FROM account_keys 
+        WHERE is_active = 0
+      `;
+      
+      const cleanupResult = await executeQuery(cleanupOrphanedQuery);
+      if (cleanupResult.success) {
+        console.log(`✅ Cleaned up ${cleanupResult.affectedRows || 0} orphaned account_keys records`);
+      } else {
+        console.error('❌ Failed to cleanup orphaned records:', cleanupResult.error);
+      }
+      
+      const settings = await this.getSettings();
+      console.log('Current settings:', settings);
+      
       await this.cleanupExpiredAccounts(settings);
       console.log('✅ Force cleanup completed');
       
@@ -1382,6 +1617,7 @@ console.log('Service methods:', Object.getOwnPropertyNames(Object.getPrototypeOf
 console.log('Service has start method:', typeof serviceInstance.start);
 console.log('Service has getStatus method:', typeof serviceInstance.getStatus);
 console.log('Service has forceCleanupNow method:', typeof serviceInstance.forceCleanupNow);
+console.log('Service has quickCleanupInactiveAccounts method:', typeof serviceInstance.quickCleanupInactiveAccounts);
 console.log('Service has findAllSuitableTargetAccounts method:', typeof serviceInstance.findAllSuitableTargetAccounts);
 console.log('Service has processKeyQueue method:', typeof serviceInstance.processKeyQueue);
 

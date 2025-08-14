@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Button, Input, InputNumber, Switch, Select, Typography, Card, Tabs, Form, Space, Divider, App, Table, Modal, Popconfirm, Badge, Spin } from 'antd'
 import { 
   SettingOutlined, 
@@ -25,7 +25,7 @@ const { TextArea } = Input
 const { Option } = Select
 
 function Settings() {
-  const { settings, updateSettings, resetSettings } = useSettings()
+  const { settings, updateSettings, updateNotificationEnabled, resetSettings } = useSettings()
   const { message: messageApi } = App.useApp()
   const [form] = Form.useForm()
   const [giftCodes, setGiftCodes] = useState([])
@@ -43,33 +43,53 @@ function Settings() {
   })
   const [isEditingAutoAssignment, setIsEditingAutoAssignment] = useState(false)
   const [loadingServiceStatus, setLoadingServiceStatus] = useState(false)
+  const hasLoadedFromDatabase = useRef(false)
 
   // Load notification từ database khi component mount
   useEffect(() => {
+    if (hasLoadedFromDatabase.current) return
+    
     const loadSettingsFromDatabase = async () => {
       try {
         // Load notification settings
-        const isDefaultNotification = 
-          settings.notification.title === 'THÔNG BÁO HỆ THỐNG' && 
-          settings.notification.content === 'Chào mừng bạn đến với KeyVPN Tool!'
-        
-        if (isDefaultNotification) {
-          const notificationResponse = await settingsAPI.getNotifications()
-          if (notificationResponse.success && notificationResponse.data) {
-            const dbNotification = notificationResponse.data
-            updateSettings({
-              notification: {
-                ...settings.notification,
-                title: dbNotification.title || settings.notification.title,
-                content: dbNotification.content || settings.notification.content,
-                position: dbNotification.position || settings.notification.position,
-                displayCount: dbNotification.display_count || settings.notification.displayCount,
-                hasLink: dbNotification.has_link || settings.notification.hasLink,
-                linkUrl: dbNotification.link_url || settings.notification.linkUrl,
-                linkText: dbNotification.link_text || settings.notification.linkText
-              }
-            })
+        const notificationResponse = await settingsAPI.getNotifications()
+        if (notificationResponse.success && notificationResponse.data) {
+          const dbNotification = notificationResponse.data
+          
+          // Get current settings at the time of API call
+          const currentSettings = JSON.parse(localStorage.getItem('vpn-settings') || '{}')
+          const defaultNotification = {
+            enabled: true,
+            title: 'THÔNG BÁO HỆ THỐNG',
+            content: 'Chào mừng bạn đến với KeyVPN Tool!',
+            position: 'before',
+            displayCount: 1,
+            currentCount: 0,
+            hasLink: false,
+            linkUrl: '',
+            linkText: 'Xem thêm'
           }
+          const currentNotification = currentSettings.notification || defaultNotification
+          
+          // Update notification content using updateSettings (saves to localStorage)
+          updateSettings({
+            notification: {
+              ...currentNotification,
+              title: dbNotification.title || currentNotification.title,
+              content: dbNotification.content || currentNotification.content,
+              position: dbNotification.position || currentNotification.position,
+              displayCount: dbNotification.display_count || currentNotification.displayCount,
+              hasLink: dbNotification.has_link || currentNotification.hasLink,
+              linkUrl: dbNotification.link_url || currentNotification.linkUrl,
+              linkText: dbNotification.link_text || currentNotification.linkText
+            }
+          })
+          
+          // Update enabled status separately (doesn't save to localStorage)
+          if (dbNotification.enabled !== undefined) {
+            updateNotificationEnabled(dbNotification.enabled)
+          }
+          
         }
 
         // Load gift key settings
@@ -86,19 +106,18 @@ function Settings() {
 
         // Load auto assignment settings
         try {
-          console.log('Loading auto assignment settings...');
           const autoAssignmentResponse = await autoAssignmentAPI.getSettings()
-          console.log('Auto assignment response:', autoAssignmentResponse);
           
           if (autoAssignmentResponse.success && autoAssignmentResponse.data) {
-            console.log('Updating auto assignment settings:', autoAssignmentResponse.data);
             
             // Update settings in state
             updateSettings({
               autoAssignment: {
                 enabled: autoAssignmentResponse.data.enabled || false,
                 beforeExpiry: autoAssignmentResponse.data.beforeExpiry || 300,
-                checkInterval: autoAssignmentResponse.data.checkInterval || 30
+                checkInterval: autoAssignmentResponse.data.checkInterval || 30,
+                deleteExpiredAccounts: autoAssignmentResponse.data.deleteExpiredAccounts !== undefined 
+                  ? autoAssignmentResponse.data.deleteExpiredAccounts : true
               }
             });
             
@@ -108,16 +127,15 @@ function Settings() {
               checkInterval: autoAssignmentResponse.data.checkInterval || 30
             });
             
-            console.log('Auto assignment settings loaded successfully');
           }
-        } catch (error) {
-          console.log('Auto assignment settings not found, using defaults:', error.message)
+        } catch {
           // Set default values if not found
           updateSettings({
             autoAssignment: {
               enabled: false,
               beforeExpiry: 300,
-              checkInterval: 30
+              checkInterval: 30,
+              deleteExpiredAccounts: true
             }
           });
           setAutoAssignmentInputs({
@@ -131,6 +149,7 @@ function Settings() {
       }
     }
 
+    hasLoadedFromDatabase.current = true
     loadSettingsFromDatabase()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // Chỉ chạy một lần khi component mount
@@ -145,10 +164,59 @@ function Settings() {
     }
   };
 
-  const updateNotification = (newData) => {
-    updateSettings({
-      notification: { ...settings.notification, ...newData }
-    })
+  const updateNotification = async (newData) => {
+    // If enabled status is being changed, save to database immediately
+    if (newData.enabled !== undefined) {
+      try {
+        const response = await settingsAPI.updateNotificationEnabled(newData.enabled)
+        
+        if (!response.success) {
+          messageApi.error('Lỗi khi lưu trạng thái thông báo')
+          return
+        } else {
+          messageApi.success(newData.enabled ? 'Đã bật thông báo' : 'Đã tắt thông báo')
+          // Update context with new enabled status
+          updateNotificationEnabled(newData.enabled)
+        }
+      } catch (error) {
+        console.error('Error updating notification enabled:', error)
+        messageApi.error('Lỗi khi lưu trạng thái thông báo')
+        return
+      }
+    } else {
+      // For other notification fields, only update local context (don't save to database)
+      const updatedNotification = { ...settings.notification, ...newData }
+      updateSettings({
+        notification: updatedNotification
+      })
+    }
+  }
+
+  // Function to save notification content to database (called by saveSettings)
+  const saveNotificationToDatabase = async () => {
+    try {
+      const response = await settingsAPI.updateNotification({
+        title: settings.notification.title,
+        content: settings.notification.content,
+        position: settings.notification.position,
+        display_count: settings.notification.displayCount,
+        has_link: settings.notification.hasLink,
+        link_url: settings.notification.linkUrl,
+        link_text: settings.notification.linkText,
+        target_audience: 'all',
+        type: 'info'
+      })
+      
+      if (response.success) {
+        return { success: true }
+      } else {
+        console.error('Failed to save notification content:', response.message);
+        return { success: false, message: response.message }
+      }
+    } catch (error) {
+      console.error('Error saving notification content to database:', error);
+      return { success: false, message: error.message }
+    }
   }
 
   const validateNotificationForm = () => {
@@ -207,8 +275,6 @@ function Settings() {
         max_uses: values.maxUses || (settings.giftKey.allowMultipleUse ? settings.giftKey.maxUses : 1),
         expires_at: values.expiresAt || null
       }
-
-      console.log('Creating gift code with data:', giftData) // Debug log
 
       const response = await giftAPI.createGift(giftData)
       if (response.success) {
@@ -309,13 +375,13 @@ function Settings() {
   // Save auto assignment settings to database
   const saveAutoAssignmentSettings = async (newSettings) => {
     try {
-      console.log('Saving auto assignment settings:', newSettings);
       
       // Ensure all required fields are present and valid
       const settingsToSave = {
         enabled: Boolean(newSettings.enabled),
         beforeExpiry: newSettings.beforeExpiry !== null && newSettings.beforeExpiry !== undefined ? Number(newSettings.beforeExpiry) : 300,
-        checkInterval: newSettings.checkInterval !== null && newSettings.checkInterval !== undefined ? Number(newSettings.checkInterval) : 30
+        checkInterval: newSettings.checkInterval !== null && newSettings.checkInterval !== undefined ? Number(newSettings.checkInterval) : 30,
+        deleteExpiredAccounts: newSettings.deleteExpiredAccounts !== undefined ? Boolean(newSettings.deleteExpiredAccounts) : true
       };
 
       // Validate the numbers
@@ -327,8 +393,6 @@ function Settings() {
         throw new Error('Check interval must be between 1-360 minutes');
       }
 
-      console.log('Settings to save:', settingsToSave);
-      
       const response = await autoAssignmentAPI.updateSettings(settingsToSave);
       
       if (response.success) {
@@ -372,21 +436,13 @@ function Settings() {
     }
 
     try {
-      // Save notification settings
+      // Save notification content to database
       if (settings.notification.enabled) {
-        // Save notification to database
-        await settingsAPI.updateNotification({
-          title: settings.notification.title,
-          content: settings.notification.content,
-          type: 'info',
-          targetAudience: 'all',
-          displayCount: settings.notification.displayCount,
-          hasLink: settings.notification.hasLink,
-          linkUrl: settings.notification.linkUrl || null,
-          linkText: settings.notification.linkText || null,
-          position: settings.notification.position,
-          isActive: true
-        })
+        const notificationSaveResult = await saveNotificationToDatabase()
+        if (!notificationSaveResult.success) {
+          messageApi.error('Lỗi khi lưu nội dung thông báo: ' + notificationSaveResult.message)
+          return
+        }
       } else {
         // Disable all notifications in database  
         await settingsAPI.disableNotifications()
@@ -434,8 +490,13 @@ function Settings() {
                   <Text strong>Bật/Tắt thông báo</Text>
                   <Switch 
                     checked={settings.notification.enabled}
-                    onChange={(checked) => updateNotification({ enabled: checked })}
+                    onChange={(checked) => {
+                      updateNotification({ enabled: checked });
+                    }}
                   />
+                  <Text style={{ marginLeft: 8, fontSize: 12, color: '#666' }}>
+                    Current: {settings.notification.enabled ? 'ON' : 'OFF'}
+                  </Text>
                 </div>
               </Form.Item>
 
@@ -745,8 +806,6 @@ function Settings() {
                 const bonusDays = settings.giftKey.defaultExpiration
                 const maxUses = settings.giftKey.allowMultipleUse ? settings.giftKey.maxUses : 1
                 
-                console.log('Modal sending data:', { bonusDays, maxUses }) // Debug log
-                
                 createGiftCode({
                   bonusDays,
                   maxUses
@@ -824,7 +883,9 @@ function Settings() {
                           : currentSettings.beforeExpiry || 300,
                         checkInterval: autoAssignmentInputs.checkInterval !== null && autoAssignmentInputs.checkInterval !== undefined
                           ? autoAssignmentInputs.checkInterval
-                          : currentSettings.checkInterval || 30
+                          : currentSettings.checkInterval || 30,
+                        deleteExpiredAccounts: currentSettings.deleteExpiredAccounts !== undefined
+                          ? currentSettings.deleteExpiredAccounts : true
                       }
                       
                       // Update UI state first
@@ -884,7 +945,9 @@ function Settings() {
                           const newSettings = {
                             enabled: currentSettings.enabled || false,
                             beforeExpiry: finalValue,
-                            checkInterval: currentSettings.checkInterval || 30
+                            checkInterval: currentSettings.checkInterval || 30,
+                            deleteExpiredAccounts: currentSettings.deleteExpiredAccounts !== undefined
+                              ? currentSettings.deleteExpiredAccounts : true
                           }
                           updateSettings({
                             autoAssignment: newSettings
@@ -936,7 +999,9 @@ function Settings() {
                           const newSettings = {
                             enabled: currentSettings.enabled || false,
                             beforeExpiry: currentSettings.beforeExpiry || 300,
-                            checkInterval: finalValue
+                            checkInterval: finalValue,
+                            deleteExpiredAccounts: currentSettings.deleteExpiredAccounts !== undefined
+                              ? currentSettings.deleteExpiredAccounts : true
                           }
                           updateSettings({
                             autoAssignment: newSettings
