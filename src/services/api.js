@@ -49,11 +49,13 @@ class ApiClient {
         if (response.status === 401 || response.status === 403) {
           console.warn(`Authentication failed (${response.status}): ${data.message || 'Token invalid'}`);
           this.setToken(null);
-          // Force redirect to login page
-          window.location.href = '/admin-login';
+          // Chỉ redirect nếu đang ở route admin, không phải trang chủ hoặc public
+          const isAdminRoute = window.location.pathname.startsWith('/dashboard') || window.location.pathname.startsWith('/create-key') || window.location.pathname.startsWith('/account') || window.location.pathname.startsWith('/settings');
+          if (isAdminRoute) {
+            window.location.href = '/admin-login';
+          }
           throw new Error('Session expired. Please login again.');
         }
-        
         // Log detailed error for debugging
         console.log('API Error Details:', data);
         throw new Error(data.details || data.message || `HTTP error! status: ${response.status}`);
@@ -343,25 +345,23 @@ export const utils = {
   // Handle API errors
   handleError: (error) => {
     console.error('API Error:', error);
-    
     if (error.message.includes('401')) {
-      // Redirect to login
-      window.location.href = '/admin-login';
+      // Chỉ redirect nếu đang ở route admin
+      const isAdminRoute = window.location.pathname.startsWith('/dashboard') || window.location.pathname.startsWith('/create-key') || window.location.pathname.startsWith('/account') || window.location.pathname.startsWith('/settings');
+      if (isAdminRoute) {
+        window.location.href = '/admin-login';
+      }
       return 'Authentication required';
     }
-    
     if (error.message.includes('403')) {
       return 'Access denied';
     }
-    
     if (error.message.includes('404')) {
       return 'Resource not found';
     }
-    
     if (error.message.includes('500')) {
       return 'Server error. Please try again later.';
     }
-    
     return error.message || 'An unexpected error occurred';
   },
 };

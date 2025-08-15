@@ -1,6 +1,6 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { useEffect } from 'react'
-import { App as AntApp, Spin, Alert } from 'antd'
+import { App as AntApp } from 'antd'
 import './App.css'
 import Header from './components/Header'
 import NavBar from './components/NavBar'
@@ -10,34 +10,37 @@ import Account from './components/Account'
 import Settings from './components/Settings'
 import AdminLogin from './components/AdminLogin'
 import { SettingsProvider } from './contexts/SettingsContext'
-
 import DashboardAdmin from './components/DashboardAdmin'
-
-
-// DashboardAdmin đã hoàn chỉnh, thay thế Dashboard cũ
-
-// Component kiểm tra và chuyển hướng trang chủ
-function HomePage() {
-  const isAdmin = localStorage.getItem('isAdmin') === 'true'
-  
-  if (isAdmin) {
-    return <Navigate to="/dashboard" replace />
-  }
-  
-  return <AuthKey />
-}
 
 // Component bảo vệ route admin
 function ProtectedRoute({ children }) {
   const isAdmin = localStorage.getItem('isAdmin') === 'true'
+  // Nếu không phải admin, chỉ chuyển hướng khi đang ở các route admin
   return isAdmin ? children : <Navigate to="/admin-login" replace />
+}
+
+// Trang chủ user mặc định
+function HomePage() {
+  return <AuthKey />
+}
+
+// Admin login page
+function AdminLoginPage() {
+  const navigate = useNavigate()
+
+  // Giả sử bạn có hàm login admin, sau khi login:
+  const handleLoginSuccess = () => {
+    localStorage.setItem('isAdmin', 'true')
+    navigate('/dashboard', { replace: true })
+  }
+
+  return <AdminLogin onLoginSuccess={handleLoginSuccess} />
 }
 
 function App() {
   useEffect(() => {
     // Lắng nghe thay đổi trong localStorage để update NavBar
     const handleStorageChange = () => {
-      // Force re-render NavBar khi admin status thay đổi
       window.dispatchEvent(new Event('admin-status-changed'))
     }
     
@@ -52,40 +55,14 @@ function App() {
           <Header />
           <NavBar />
           <Routes>
+            {/* Trang chủ luôn là AuthKey, không bảo vệ */}
             <Route path="/" element={<HomePage />} />
-            <Route path="/admin-login" element={<AdminLogin />} />
-            <Route 
-              path="/dashboard" 
-              element={
-                <ProtectedRoute>
-                  <DashboardAdmin />
-                </ProtectedRoute>
-              } 
-            />
-            <Route 
-              path="/create-key" 
-              element={
-                <ProtectedRoute>
-                  <CreateKey />
-                </ProtectedRoute>
-              } 
-            />
-            <Route 
-              path="/account" 
-              element={
-                <ProtectedRoute>
-                  <Account />
-                </ProtectedRoute>
-              } 
-            />
-            <Route 
-              path="/settings" 
-              element={
-                <ProtectedRoute>
-                  <Settings />
-                </ProtectedRoute>
-              } 
-            />
+            <Route path="/admin-login" element={<AdminLoginPage />} />
+            {/* Các route admin mới dùng ProtectedRoute */}
+            <Route path="/dashboard" element={<ProtectedRoute><DashboardAdmin /></ProtectedRoute>} />
+            <Route path="/create-key" element={<ProtectedRoute><CreateKey /></ProtectedRoute>} />
+            <Route path="/account" element={<ProtectedRoute><Account /></ProtectedRoute>} />
+            <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
           </Routes>
         </Router>
       </SettingsProvider>
